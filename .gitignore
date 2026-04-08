@@ -33,6 +33,13 @@ local.properties
 # Debug files
 *.log
 *.tmp
+*.hprof
+
+# Build artifacts
+litertlm_classes/
+
+# Gradle-generated asset copies
+frameworks/runtime-src/proj.android-studio/app/assets/src/app/
 
 # OS files
 .DS_Store
