@@ -6,6 +6,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import org.cocos2dx.lib.Cocos2dxActivity;
+import org.cocos2dx.lib.Cocos2dxHelper;
 import org.cocos2dx.lib.Cocos2dxLuaJavaBridge;
 
 import java.io.File;
@@ -15,23 +16,6 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
-/**
- * LLM 服务类 - 提供 Lua 可调用的静态方法
- * 通过 LuaJavaBridge 暴露给 Lua 层
- *
- * Lua 调用示例:
- * local luaj = require("cocos.cocos2d.luaj")
- * local className = "org/cocos2dx/lua/llm/LLMService"
- *
- * -- 初始化
- * luaj.callStaticMethod(className, "init", {modelPath, backend}, "(Ljava/lang/String;Ljava/lang/String;)Z")
- *
- * -- 检查状态
- * luaj.callStaticMethod(className, "isReady", {}, "()Z")
- *
- * -- 发送消息
- * luaj.callStaticMethod(className, "chat", {prompt, callbackId}, "(Ljava/lang/String;I)V")
- */
 public class LLMService {
     private static final String TAG = "LLMService";
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
@@ -41,13 +25,6 @@ public class LLMService {
 
     // ==================== 初始化相关 ====================
 
-    /**
-     * 初始化 LLM 服务
-     *
-     * @param modelPath 模型文件路径
-     * @param backend 后端类型：CPU, GPU, NPU
-     * @return true 表示开始初始化（异步），false 表示失败
-     */
     public static boolean init(String modelPath, String backend) {
         Context context = Cocos2dxActivity.getContext();
         if (context == null) {
@@ -75,44 +52,20 @@ public class LLMService {
         return true;
     }
 
-    /**
-     * 使用默认配置初始化（CPU 后端）
-     *
-     * @param modelPath 模型文件路径
-     * @return true 表示开始初始化
-     */
     public static boolean initWithDefault(String modelPath) {
         return init(modelPath, "CPU");
     }
 
-    /**
-     * 检查是否已初始化完成
-     *
-     * @return true 已初始化，false 未初始化
-     */
     public static boolean isReady() {
         return LLMEngine.getInstance().isInitialized();
     }
 
-    /**
-     * 获取最后的错误信息
-     *
-     * @return 错误信息字符串
-     */
     public static String getLastError() {
         return LLMEngine.getInstance().getLastError();
     }
 
     // ==================== 推理相关 ====================
 
-    /**
-     * 发送消息并异步回调（流式输出）
-     *
-     * @param prompt 输入提示
-     * @param onTokenCallback 每个 token 的回调函数 ID
-     * @param onCompleteCallback 完成时的回调函数 ID
-     * @param onErrorCallback 错误时的回调函数 ID
-     */
     public static void chatWithCallback(String prompt,
                                         final int onTokenCallback,
                                         final int onCompleteCallback,
@@ -124,54 +77,48 @@ public class LLMService {
             public void onToken(String token) {
                 mFullResponse.append(token);
 
-                // 流式回调到 Lua
                 if (onTokenCallback != 0) {
-                    try {
-                        // 格式: "callbackId:token"
-                        String data = onTokenCallback + ":" + token;
-                        Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_TOKEN__", data);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to call Lua onToken callback", e);
-                    }
+                    final String data = onTokenCallback + ":" + token;
+                    runOnGLThread(() -> {
+                        try {
+                            Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_TOKEN__", data);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to call Lua onToken callback", e);
+                        }
+                    });
                 }
             }
 
             @Override
             public void onComplete(String fullResponse) {
-                // 完成回调到 Lua
                 if (onCompleteCallback != 0) {
-                    try {
-                        // 格式: "callbackId:response"
-                        String data = onCompleteCallback + ":" + fullResponse;
-                        Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_COMPLETE__", data);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to call Lua onComplete callback", e);
-                    }
+                    final String data = onCompleteCallback + ":" + fullResponse;
+                    runOnGLThread(() -> {
+                        try {
+                            Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_COMPLETE__", data);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to call Lua onComplete callback", e);
+                        }
+                    });
                 }
             }
 
             @Override
             public void onError(String errorMessage) {
-                // 错误回调到 Lua
                 if (onErrorCallback != 0) {
-                    try {
-                        // 格式: "callbackId:errorMessage"
-                        String data = onErrorCallback + ":" + errorMessage;
-                        Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_ERROR__", data);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to call Lua onError callback", e);
-                    }
+                    final String data = onErrorCallback + ":" + errorMessage;
+                    runOnGLThread(() -> {
+                        try {
+                            Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_ERROR__", data);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to call Lua onError callback", e);
+                        }
+                    });
                 }
             }
         });
     }
 
-    /**
-     * 简化的聊天接口 - 只回调完整结果
-     *
-     * @param prompt 输入提示
-     * @param callbackId 回调函数 ID
-     */
     public static void chat(String prompt, final int callbackId) {
         LLMEngine.getInstance().sendMessageAsync(prompt, new LLMEngine.LLMCallback() {
             private StringBuilder mFullResponse = new StringBuilder();
@@ -184,37 +131,33 @@ public class LLMService {
             @Override
             public void onComplete(String fullResponse) {
                 if (callbackId != 0) {
-                    try {
-                        // 格式: "callbackId:response"
-                        String data = callbackId + ":" + fullResponse;
-                        Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_CHAT__", data);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to call Lua chat callback", e);
-                    }
+                    final String data = callbackId + ":" + fullResponse;
+                    runOnGLThread(() -> {
+                        try {
+                            Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_CHAT__", data);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to call Lua chat callback", e);
+                        }
+                    });
                 }
             }
 
             @Override
             public void onError(String errorMessage) {
                 if (callbackId != 0) {
-                    try {
-                        // 格式: "callbackId:ERROR:errorMessage"
-                        String data = callbackId + ":ERROR:" + errorMessage;
-                        Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_CHAT__", data);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to call Lua chat error callback", e);
-                    }
+                    final String data = callbackId + ":ERROR:" + errorMessage;
+                    runOnGLThread(() -> {
+                        try {
+                            Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_CHAT__", data);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to call Lua chat error callback", e);
+                        }
+                    });
                 }
             }
         });
     }
 
-    /**
-     * 同步聊天（阻塞调用，不推荐在主线程使用）
-     *
-     * @param prompt 输入提示
-     * @return 完整响应文本，或错误信息（以 "ERROR:" 开头）
-     */
     public static String chatSync(String prompt) {
         try {
             return LLMEngine.getInstance().sendMessageSync(prompt);
@@ -224,14 +167,8 @@ public class LLMService {
         }
     }
 
-    // ==================== 文件操作（供 Lua 层下载使用） ====================
+    // ==================== 文件操作 ====================
 
-    /**
-     * 检查模型文件是否存在
-     *
-     * @param filePath 文件路径
-     * @return true 存在，false 不存在
-     */
     public static boolean checkModelExists(String filePath) {
         if (filePath == null || filePath.isEmpty()) {
             return false;
@@ -240,11 +177,6 @@ public class LLMService {
         return file.exists() && file.length() > 0;
     }
 
-    /**
-     * 创建目录（包括父目录）
-     *
-     * @param dirPath 目录路径
-     */
     public static void createDirs(String dirPath) {
         if (dirPath == null || dirPath.isEmpty()) {
             return;
@@ -256,13 +188,6 @@ public class LLMService {
         }
     }
 
-    /**
-     * 保存下载数据到文件
-     *
-     * @param filePath 文件路径
-     * @param data 字节数据
-     * @return true 成功，false 失败
-     */
     public static boolean saveFile(String filePath, byte[] data) {
         if (filePath == null || data == null) {
             Log.e(TAG, "saveFile: invalid parameters");
@@ -272,7 +197,6 @@ public class LLMService {
         File file = new File(filePath);
         File parentDir = file.getParentFile();
 
-        // 确保父目录存在
         if (parentDir != null && !parentDir.exists()) {
             if (!parentDir.mkdirs()) {
                 Log.e(TAG, "Failed to create parent dir: " + parentDir);
@@ -291,12 +215,6 @@ public class LLMService {
         }
     }
 
-    /**
-     * 获取模型文件大小
-     *
-     * @param filePath 文件路径
-     * @return 文件大小（字节），不存在返回 -1
-     */
     public static long getFileSize(String filePath) {
         if (filePath == null || filePath.isEmpty()) {
             return -1;
@@ -310,17 +228,11 @@ public class LLMService {
 
     // ==================== 会话管理 ====================
 
-    /**
-     * 重置对话历史
-     */
     public static void resetConversation() {
         LLMEngine.getInstance().resetConversation();
         Log.i(TAG, "Conversation reset");
     }
 
-    /**
-     * 释放资源
-     */
     public static void release() {
         LLMEngine.getInstance().release();
         Log.i(TAG, "Resources released");
@@ -329,24 +241,25 @@ public class LLMService {
     // ==================== 内部辅助方法 ====================
 
     /**
-     * 通知 Lua 初始化结果
+     * 在 GL 线程执行 Runnable（Lua bridge 必须在 GL 线程调用）
      */
+    private static void runOnGLThread(Runnable r) {
+        Cocos2dxHelper.runOnGLThread(r);
+    }
+
     private static void notifyLuaInitResult(final boolean success, final String errorMessage) {
-        try {
-            String result = success ? "SUCCESS" : "ERROR:" + errorMessage;
-            Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_INIT__", result);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to notify Lua init result", e);
-        }
+        final String result = success ? "SUCCESS" : "ERROR:" + errorMessage;
+        runOnGLThread(() -> {
+            try {
+                Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString("__LLM_ON_INIT__", result);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to notify Lua init result", e);
+            }
+        });
     }
 
     // ==================== 模型下载相关 ====================
 
-    /**
-     * 获取模型存储目录的绝对路径
-     *
-     * @return 模型目录路径
-     */
     public static String getModelDir() {
         Context context = Cocos2dxActivity.getContext();
         if (context == null) {
@@ -359,17 +272,6 @@ public class LLMService {
         return dir.getAbsolutePath();
     }
 
-    /**
-     * 流式下载模型文件（异步，不阻塞主线程）
-     * 通过 Lua 全局回调报告进度和结果：
-     * - __LLM_ON_DOWNLOAD_PROGRESS__ : 进度百分比（如 "42"）
-     * - __LLM_ON_DOWNLOAD_COMPLETE__ : 文件路径（成功）或 "ERROR:msg"（失败）
-     * - __LLM_ON_DOWNLOAD_ERROR__ : 错误信息
-     *
-     * @param urlString 下载 URL
-     * @param destPath  目标文件绝对路径
-     * @return true 表示开始下载，false 表示参数无效
-     */
     public static boolean downloadModel(final String urlString, final String destPath) {
         if (urlString == null || urlString.isEmpty() || destPath == null || destPath.isEmpty()) {
             Log.e(TAG, "downloadModel: invalid parameters");
@@ -386,12 +288,10 @@ public class LLMService {
             HttpURLConnection connection = null;
 
             try {
-                // 如果已有临时文件，删除重新下载
                 if (tempFile.exists()) {
                     tempFile.delete();
                 }
 
-                // 确保父目录存在
                 File parentDir = tempFile.getParentFile();
                 if (parentDir != null && !parentDir.exists()) {
                     parentDir.mkdirs();
@@ -433,13 +333,12 @@ public class LLMService {
                     fos.write(buffer, 0, bytesRead);
                     totalRead += bytesRead;
 
-                    // 计算并报告真实进度
                     if (fileSize > 0) {
                         int percent = (int) ((totalRead * 100) / fileSize);
                         if (percent != lastReportedPercent) {
                             lastReportedPercent = percent;
                             final int finalPercent = percent;
-                            sHandler.post(() -> {
+                            runOnGLThread(() -> {
                                 try {
                                     Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
                                         "__LLM_ON_DOWNLOAD_PROGRESS__",
@@ -457,7 +356,6 @@ public class LLMService {
                 fos.close();
                 is.close();
 
-                // 重命名为最终文件
                 File destFile = new File(destPath);
                 if (destFile.exists()) {
                     destFile.delete();
@@ -470,8 +368,7 @@ public class LLMService {
 
                 Log.i(TAG, "Download completed: " + destPath + ", size: " + destFile.length());
 
-                // 通知下载完成
-                sHandler.post(() -> {
+                runOnGLThread(() -> {
                     try {
                         Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
                             "__LLM_ON_DOWNLOAD_COMPLETE__",
@@ -484,7 +381,6 @@ public class LLMService {
 
             } catch (final Exception e) {
                 Log.e(TAG, "Download failed", e);
-                // 清理临时文件
                 if (tempFile.exists()) {
                     tempFile.delete();
                 }
@@ -499,19 +395,13 @@ public class LLMService {
         return true;
     }
 
-    /**
-     * 取消正在进行的下载
-     */
     public static void cancelDownload() {
         sDownloadCancelled = true;
         Log.i(TAG, "Download cancel requested");
     }
 
-    /**
-     * 通知 Lua 下载错误
-     */
     private static void notifyDownloadError(final String errorMessage) {
-        sHandler.post(() -> {
+        runOnGLThread(() -> {
             try {
                 Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
                     "__LLM_ON_DOWNLOAD_ERROR__",

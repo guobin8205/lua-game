@@ -290,7 +290,7 @@ public class LLMEngine {
                     }
                 });
             }
-        }, null);
+        }, java.util.Collections.emptyMap());
     }
 
     /**

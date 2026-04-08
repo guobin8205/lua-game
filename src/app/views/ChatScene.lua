@@ -60,14 +60,6 @@ function ChatScene:ctor()
 end
 
 function ChatScene:onEnter()
-    -- 键盘事件监听
-    local listener = cc.EventListenerKeyboard:create()
-    listener:registerScriptHandler(function(keyCode, event)
-        if keyCode == cc.KeyCode.KEY_ENTER or keyCode == cc.KeyCode.KEY_DPAD_CENTER then
-            self:onSendClick()
-        end
-    end, cc.Handler.EVENT_KEYBOARD_RELEASED)
-    self:getEventDispatcher():addEventListenerWithSceneGraphPriority(listener, self)
 end
 
 function ChatScene:onExit()
@@ -197,65 +189,55 @@ function ChatScene:createInputField()
     local winSize = display.size
     local fieldWidth = winSize.width - 140
 
-    -- 使用 ccui.TextField
-    local textField = ccui.TextField:create()
-    textField:setPlaceHolder("输入消息...")
-    textField:setFontSize(16)
-    textField:setTextColor(cc.c3b(51, 51, 51))
-    textField:setPlaceHolderColor(cc.c3b(180, 180, 180))
-    textField:setContentSize(fieldWidth, SIZES.inputHeight)
-    textField:setAnchorPoint(0, 0.5)
+    -- 创建 1x1 白色像素纹理作为 EditBox 背景
+    local rt = cc.RenderTexture:create(2, 2)
+    rt:begin()
+    local dn = cc.DrawNode:create()
+    dn:drawSolidRect(cc.p(0,0), cc.p(2,2), cc.c4f(0.96, 0.96, 0.96, 1.0))
+    dn:visit()
+    rt:endToLua()
+    local spriteFrame = rt:getSprite():getSpriteFrame()
 
-    -- 点击时弹出键盘
-    textField:addTouchEventListener(function(sender, eventType)
-        if eventType == ccui.TouchEventType.began then
-            sender:attachWithIME()
+    -- 使用 Scale9Sprite 创建 EditBox
+    local bgSprite = ccui.Scale9Sprite:createWithSpriteFrame(spriteFrame)
+    local editBox = ccui.EditBox:create(cc.size(fieldWidth, SIZES.inputHeight), bgSprite)
+    editBox:setPlaceHolder("输入消息...")
+    editBox:setFontSize(16)
+    editBox:setFontColor(cc.c3b(51, 51, 51))
+    editBox:setAnchorPoint(0, 0.5)
+
+    -- 回车发送
+    editBox:registerScriptEditBoxHandler(function(event)
+        if event == "return" then
+            self:onSendClick()
         end
     end)
 
-    self.textField = textField
-    return textField
+    self.textField = editBox
+    return editBox
 end
 
 function ChatScene:createSendButton()
     local btnSize = cc.size(70, 36)
 
-    -- 创建按钮容器
-    local btn = cc.Node:create()
+    -- 使用 ccui.Button
+    local btn = ccui.Button:create()
     btn:setContentSize(btnSize)
+    btn:setTitleText("发送")
+    btn:setTitleFontSize(14)
+    btn:setTitleColor(cc.c3b(255, 255, 255))
+    btn:setScale9Enabled(true)
 
-    -- 背景色块
-    local bg = cc.LayerColor:create(cc.c4b(COLORS.sendBtn.r, COLORS.sendBtn.g, COLORS.sendBtn.b, 255))
-    bg:setContentSize(btnSize)
-    bg:setPosition(0, 0)
-    btn:addChild(bg)
-    btn.bgNode = bg
+    -- 背景色
+    btn:setColor(COLORS.sendBtn)
 
-    -- 文字
-    local label = cc.Label:createWithSystemFont("发送", "Arial", 14)
-    label:setColor(cc.c3b(255, 255, 255))
-    label:setPosition(btnSize.width / 2, btnSize.height / 2)
-    btn:addChild(label)
-    btn.titleLabel = label
-
-    -- 点击事件
-    local function hitTest(touch)
-        local pos = btn:convertToNodeSpace(touch:getLocation())
-        local size = btn:getContentSize()
-        return pos.x >= 0 and pos.x <= size.width and pos.y >= 0 and pos.y <= size.height
-    end
-
-    local listener = cc.EventListenerTouchOneByOne:create()
-    listener:registerScriptHandler(function(touch, event)
-        return hitTest(touch)
-    end, cc.Handler.EVENT_TOUCH_BEGAN)
-    listener:registerScriptHandler(function(touch, event)
-        if hitTest(touch) then
+    btn:addTouchEventListener(function(sender, eventType)
+        if eventType == ccui.TouchEventType.ended then
             self:onSendClick()
         end
-    end, cc.Handler.EVENT_TOUCH_ENDED)
-    btn:getEventDispatcher():addEventListenerWithSceneGraphPriority(listener, btn)
+    end)
 
+    self.sendBtn = btn
     return btn
 end
 
@@ -486,7 +468,7 @@ end
 
 function ChatScene:onSendClick()
     -- 获取输入文本
-    local text = self.textField:getString()
+    local text = self.textField:getText()
     if not text or text == "" then
         return
     end
@@ -498,7 +480,7 @@ function ChatScene:onSendClick()
     end
 
     -- 清空输入框
-    self.textField:setString("")
+    self.textField:setText("")
 
     -- 添加用户消息
     self:addUserMessage(text)
@@ -555,21 +537,13 @@ end
 
 function ChatScene:updateSendButtonState()
     if self.isGenerating then
-        if self.sendBtn.titleLabel then
-            self.sendBtn.titleLabel:setString("...")
-        end
-        if self.sendBtn.bgNode then
-            local c = COLORS.sendBtnDisabled
-            self.sendBtn.bgNode:setColor(cc.c3b(c.r, c.g, c.b))
-        end
+        self.sendBtn:setTitleText("...")
+        self.sendBtn:setColor(COLORS.sendBtnDisabled)
+        self.sendBtn:setEnabled(false)
     else
-        if self.sendBtn.titleLabel then
-            self.sendBtn.titleLabel:setString("发送")
-        end
-        if self.sendBtn.bgNode then
-            local c = COLORS.sendBtn
-            self.sendBtn.bgNode:setColor(cc.c3b(c.r, c.g, c.b))
-        end
+        self.sendBtn:setTitleText("发送")
+        self.sendBtn:setColor(COLORS.sendBtn)
+        self.sendBtn:setEnabled(true)
     end
 end
 
