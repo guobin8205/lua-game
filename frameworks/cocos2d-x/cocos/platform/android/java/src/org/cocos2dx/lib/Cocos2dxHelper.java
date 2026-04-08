@@ -52,7 +52,7 @@ import android.hardware.SensorManager;
 import com.android.vending.expansion.zipfile.APKExpansionSupport;
 import com.android.vending.expansion.zipfile.ZipResourceFile;
 
-import com.enhance.gameservice.IGameTuningService;
+// IGameTuningService stub removed - vendor SDK not available
 
 import java.io.IOException;
 import java.io.File;
@@ -90,8 +90,8 @@ public class Cocos2dxHelper {
     private static Cocos2dxHelperListener sCocos2dxHelperListener;
     private static Set<OnActivityResultListener> onActivityResultListeners = new LinkedHashSet<OnActivityResultListener>();
     private static Vibrator sVibrateService = null;
-    //Enhance API modification begin
-    private static IGameTuningService mGameServiceBinder = null;
+    //Enhance API modification begin - stubbed (vendor SDK unavailable)
+    private static Object mGameServiceBinder = null;
     private static final int BOOST_TIME = 7;
     //Enhance API modification end
 
@@ -147,20 +147,20 @@ public class Cocos2dxHelper {
                 Log.d(TAG, "android version is lower than 17");
             }
 
-            // nativeSetAudioDeviceInfo(isSupportLowLatency, sampleRate, bufferSizeInFrames); // 注释掉：.so 中没有实现
+            nativeSetAudioDeviceInfo(isSupportLowLatency, sampleRate, bufferSizeInFrames);
 
             final ApplicationInfo applicationInfo = activity.getApplicationInfo();
             
             Cocos2dxHelper.sPackageName = applicationInfo.packageName;
             Cocos2dxHelper.sFileDirectory = activity.getFilesDir().getAbsolutePath();
             
-            // Cocos2dxHelper.nativeSetApkPath(Cocos2dxHelper.getAssetsPath()); // 注释掉：.so 中没有实现
+            Cocos2dxHelper.nativeSetApkPath(Cocos2dxHelper.getAssetsPath());
     
             Cocos2dxHelper.sCocos2dxAccelerometer = new Cocos2dxAccelerometer(activity);
             Cocos2dxHelper.sCocos2dMusic = new Cocos2dxMusic(activity);
             Cocos2dxHelper.sCocos2dSound = new Cocos2dxSound(activity);
             Cocos2dxHelper.sAssetManager = activity.getAssets();
-            // Cocos2dxHelper.nativeSetContext((Context)activity, Cocos2dxHelper.sAssetManager); // 注释掉：.so 中没有实现
+            Cocos2dxHelper.nativeSetContext((Context)activity, Cocos2dxHelper.sAssetManager);
     
             Cocos2dxBitmap.setContext(activity);
 
@@ -168,10 +168,14 @@ public class Cocos2dxHelper {
 
             sInited = true;
             
-            //Enhance API modification begin
-            Intent serviceIntent = new Intent(IGameTuningService.class.getName());
-            serviceIntent.setPackage("com.enhance.gameservice");
-            boolean suc = activity.getApplicationContext().bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE);
+            //Enhance API modification begin - stubbed
+            try {
+                Intent serviceIntent = new Intent("com.enhance.gameservice.IGameTuningService");
+                serviceIntent.setPackage("com.enhance.gameservice");
+                activity.getApplicationContext().bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE);
+            } catch (Exception e) {
+                Log.d(TAG, "GameTuningService not available: " + e.getMessage());
+            }
             //Enhance API modification end
             
             int versionCode = 1;
@@ -215,15 +219,17 @@ public class Cocos2dxHelper {
         return Cocos2dxHelper.sOBBFile;
     }
     
-    //Enhance API modification begin
+    //Enhance API modification begin - stubbed
     private static ServiceConnection connection = new ServiceConnection() {
         public void onServiceConnected(ComponentName name, IBinder service) {
-            mGameServiceBinder = IGameTuningService.Stub.asInterface(service);
+            mGameServiceBinder = service;
             fastLoading(BOOST_TIME);
         }
 
         public void onServiceDisconnected(ComponentName name) {
-            sActivity.getApplicationContext().unbindService(connection);
+            try {
+                sActivity.getApplicationContext().unbindService(connection);
+            } catch (Exception e) {}
         }
     };
     //Enhance API modification end
@@ -684,67 +690,12 @@ public class Cocos2dxHelper {
         public void runOnGLThread(final Runnable pRunnable);
     }
 
-    //Enhance API modification begin
-    public static int setResolutionPercent(int per) {
-        try {
-            if (mGameServiceBinder != null) {
-                return mGameServiceBinder.setPreferredResolution(per);
-            }
-            return -1;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return -1;
-        }
-    }
-
-    public static int setFPS(int fps) {
-        try {
-            if (mGameServiceBinder != null) {
-                return mGameServiceBinder.setFramePerSecond(fps);
-            }
-            return -1;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return -1;
-        }
-    }
-
-    public static int fastLoading(int sec) {
-        try {
-            if (mGameServiceBinder != null) {
-                return mGameServiceBinder.boostUp(sec);
-            }
-            return -1;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return -1;
-        }
-    }
-
-    public static int getTemperature() {
-        try {
-            if (mGameServiceBinder != null) {
-                return mGameServiceBinder.getAbstractTemperature();
-            }
-            return -1;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return -1;
-        }
-    }
-
-    public static int setLowPowerMode(boolean enable) {
-        try {
-            if (mGameServiceBinder != null) {
-                return mGameServiceBinder.setGamePowerSaving(enable);
-            }
-            return -1;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return -1;
-        }
-    }
-
+    //Enhance API modification begin - stubbed (vendor SDK unavailable)
+    public static int setResolutionPercent(int per) { return -1; }
+    public static int setFPS(int fps) { return -1; }
+    public static int fastLoading(int sec) { return -1; }
+    public static int getTemperature() { return -1; }
+    public static int setLowPowerMode(boolean enable) { return -1; }
     //Enhance API modification end     
     public static float[] getAccelValue() {
         return Cocos2dxHelper.sCocos2dxAccelerometer.accelerometerValues;

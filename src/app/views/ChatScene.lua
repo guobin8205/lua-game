@@ -82,7 +82,7 @@ function ChatScene:initUI()
     local winSize = display.size
 
     -- 背景
-    local bg = display.newColorLayer(COLORS.bg)
+    local bg = cc.LayerColor:create(COLORS.bg)
     self:addChild(bg)
 
     -- 标题栏
@@ -97,20 +97,20 @@ function ChatScene:initUI()
     self.inputArea = self:createInputArea()
     self:addChild(self.inputArea)
 
-    -- 添加系统欢迎消息
-    self:addSystemMessage("AI 助手已就绪，开始对话吧！")
+    -- 添加系统欢迎消息（initLLM 会更新此消息）
+    self:addSystemMessage("正在准备 AI 模型...")
 end
 
 function ChatScene:createTitleBar()
     local winSize = display.size
     local titleHeight = 50
 
-    local bar = display.newNode()
+    local bar = cc.Node:create()
     bar:setContentSize(winSize.width, titleHeight)
     bar:setPosition(0, winSize.height - titleHeight)
 
     -- 背景色
-    local bg = display.newColorLayer(cc.c4b(255, 255, 255, 255))
+    local bg = cc.LayerColor:create(cc.c4b(255, 255, 255, 255))
     bg:setContentSize(winSize.width, titleHeight)
     bar:addChild(bg)
 
@@ -121,7 +121,7 @@ function ChatScene:createTitleBar()
     bar:addChild(title)
 
     -- 底部分隔线
-    local line = display.newColorLayer(cc.c4b(220, 220, 220, 255))
+    local line = cc.LayerColor:create(cc.c4b(220, 220, 220, 255))
     line:setContentSize(winSize.width, 1)
     line:setPosition(0, 0)
     bar:addChild(line)
@@ -140,12 +140,12 @@ function ChatScene:createScrollArea()
     scrollView:setViewSize(cc.size(winSize.width, scrollHeight))
     scrollView:setPosition(0, inputHeight)
     scrollView:setScale(1.0)
-    scrollView:setDirection(cc.ScrollViewDirection.vertical)
+    scrollView:setDirection(1) -- cc.SCROLLVIEW_DIRECTION_VERTICAL = 1
     scrollView:setBounceable(true)
     scrollView:setContentOffset(cc.p(0, 0), false)
 
     -- 内容容器
-    local container = display.newNode()
+    local container = cc.Node:create()
     container:setContentSize(winSize.width, scrollHeight)
     scrollView:setContainer(container)
 
@@ -159,28 +159,23 @@ function ChatScene:createInputArea()
     local winSize = display.size
     local areaHeight = SIZES.inputHeight + SIZES.inputPadding * 2
 
-    local area = display.newNode()
+    local area = cc.Node:create()
     area:setContentSize(winSize.width, areaHeight)
     area:setPosition(0, 0)
 
     -- 背景
-    local bg = display.newColorLayer(cc.c4b(255, 255, 255, 255))
+    local bg = cc.LayerColor:create(cc.c4b(255, 255, 255, 255))
     bg:setContentSize(winSize.width, areaHeight)
     area:addChild(bg)
 
     -- 顶部分隔线
-    local line = display.newColorLayer(cc.c4b(220, 220, 220, 255))
+    local line = cc.LayerColor:create(cc.c4b(220, 220, 220, 255))
     line:setContentSize(winSize.width, 1)
     line:setPosition(0, areaHeight - 1)
     area:addChild(line)
 
     -- 输入框背景
-    local inputBg = display.newScale9Sprite("input_bg.png", nil, nil,
-        cc.rect(10, 10, 1, 1))
-    if not inputBg then
-        -- 如果没有图片，用色块代替
-        inputBg = display.newColorLayer(cc.c4b(245, 245, 245, 255))
-    end
+    local inputBg = cc.LayerColor:create(cc.c4b(245, 245, 245, 255))
     inputBg:setContentSize(winSize.width - 120, SIZES.inputHeight)
     inputBg:setPosition(SIZES.inputPadding, SIZES.inputPadding)
     area:addChild(inputBg)
@@ -225,23 +220,41 @@ end
 function ChatScene:createSendButton()
     local btnSize = cc.size(70, 36)
 
-    -- 创建按钮
-    local btn = ccui.Button:create()
+    -- 创建按钮容器
+    local btn = cc.Node:create()
     btn:setContentSize(btnSize)
-    btn:setTitleText("发送")
-    btn:setTitleFontSize(14)
-    btn:setTitleColor(cc.c3b(255, 255, 255))
 
-    -- 设置按钮背景色
-    btn:setBackGroundColor(COLORS.sendBtn)
-    btn:setBackGroundColorType(ccui.LayoutBackGroundColorType.solid)
-    btn:setBackGroundColorOpacity(255)
+    -- 背景色块
+    local bg = cc.LayerColor:create(cc.c4b(COLORS.sendBtn.r, COLORS.sendBtn.g, COLORS.sendBtn.b, 255))
+    bg:setContentSize(btnSize)
+    bg:setPosition(0, 0)
+    btn:addChild(bg)
+    btn.bgNode = bg
 
-    btn:addTouchEventListener(function(sender, eventType)
-        if eventType == ccui.TouchEventType.ended then
+    -- 文字
+    local label = cc.Label:createWithSystemFont("发送", "Arial", 14)
+    label:setColor(cc.c3b(255, 255, 255))
+    label:setPosition(btnSize.width / 2, btnSize.height / 2)
+    btn:addChild(label)
+    btn.titleLabel = label
+
+    -- 点击事件
+    local function hitTest(touch)
+        local pos = btn:convertToNodeSpace(touch:getLocation())
+        local size = btn:getContentSize()
+        return pos.x >= 0 and pos.x <= size.width and pos.y >= 0 and pos.y <= size.height
+    end
+
+    local listener = cc.EventListenerTouchOneByOne:create()
+    listener:registerScriptHandler(function(touch, event)
+        return hitTest(touch)
+    end, cc.Handler.EVENT_TOUCH_BEGAN)
+    listener:registerScriptHandler(function(touch, event)
+        if hitTest(touch) then
             self:onSendClick()
         end
-    end)
+    end, cc.Handler.EVENT_TOUCH_ENDED)
+    btn:getEventDispatcher():addEventListenerWithSceneGraphPriority(listener, btn)
 
     return btn
 end
@@ -305,7 +318,7 @@ function ChatScene:appendAIText(text)
 end
 
 function ChatScene:createMessageNode(msg)
-    local node = display.newNode()
+    local node = cc.Node:create()
     node.msgData = msg
 
     local winSize = display.size
@@ -337,16 +350,8 @@ function ChatScene:createMessageNode(msg)
         local bubbleWidth = math.min(labelSize.width + SIZES.bubblePaddingX * 2, maxWidth)
         local bubbleHeight = labelSize.height + SIZES.bubblePaddingY * 2
 
-        -- 气泡背景
-        local bubble = display.newScale9Sprite("bubble.png", nil, nil,
-            cc.rect(15, 15, 1, 1))
-        if not bubble then
-            -- 如果没有图片，用圆角矩形代替
-            bubble = self:createRoundedRect(bubbleWidth, bubbleHeight, COLORS.userBubble)
-            if not isUser then
-                bubble = self:createRoundedRect(bubbleWidth, bubbleHeight, COLORS.aiBubble)
-            end
-        end
+        -- 气泡背景（直接用圆角矩形）
+        local bubble = self:createRoundedRect(bubbleWidth, bubbleHeight, isUser and COLORS.userBubble or COLORS.aiBubble)
         bubble:setContentSize(bubbleWidth, bubbleHeight)
         node:addChild(bubble)
         node.bubbleNode = bubble
@@ -389,7 +394,7 @@ end
 
 function ChatScene:createRoundedRect(width, height, color)
     -- 简单的圆角矩形实现
-    local node = display.newNode()
+    local node = cc.Node:create()
     node:setContentSize(width, height)
 
     -- 使用 DrawNode 绘制圆角矩形
@@ -446,20 +451,37 @@ function ChatScene:initLLM()
         return
     end
 
-    -- 初始化 LLM
-    self:addSystemMessage("正在加载 AI 模型...")
+    -- 使用自动下载 + 初始化流程
+    self:addSystemMessage("正在准备 AI 模型...")
 
-    llm.init({
-        modelPath = "models/gemma-4-E2B-it.litertlm",
-        backend = "GPU",  -- 或 "CPU"
+    llm.initWithDownload({
+        backend = "GPU",
+        onProgress = function(percent)
+            -- 原地更新最后一条系统消息，显示下载进度
+            self:updateLastSystemMessage(
+                string.format("正在下载模型: %d%%", math.floor(percent))
+            )
+        end,
         onInit = function(success, error)
             if success then
-                self:addSystemMessage("AI 模型加载完成，开始对话吧！")
+                self:updateLastSystemMessage("AI 模型加载完成，开始对话吧！")
             else
-                self:addSystemMessage("AI 模型加载失败: " .. (error or "未知错误"))
+                self:updateLastSystemMessage("AI 模型加载失败: " .. (error or "未知错误"))
             end
         end
     })
+end
+
+function ChatScene:updateLastSystemMessage(text)
+    for i = #self.messages, 1, -1 do
+        if self.messages[i].type == MSG_TYPE.SYSTEM then
+            self.messages[i].text = text
+            if self.messageNodes[i] and self.messageNodes[i].labelNode then
+                self.messageNodes[i].labelNode:setString(text)
+            end
+            return
+        end
+    end
 end
 
 function ChatScene:onSendClick()
@@ -514,14 +536,16 @@ function ChatScene:sendToAI(text)
         end,
         -- onError: 错误
         function(error)
+            -- 先保存引用再清空
+            local errNode = self.currentAINode
             self.isGenerating = false
             self.currentAIMsg = nil
             self.currentAINode = nil
             self:updateSendButtonState()
 
             -- 显示错误
-            if self.currentAINode then
-                self:updateMessageNodeText(self.currentAINode, "[错误: " .. error .. "]")
+            if errNode then
+                self:updateMessageNodeText(errNode, "[错误: " .. error .. "]")
             else
                 self:addSystemMessage("发生错误: " .. error)
             end
@@ -531,13 +555,21 @@ end
 
 function ChatScene:updateSendButtonState()
     if self.isGenerating then
-        self.sendBtn:setTitleText("...")
-        self.sendBtn:setBackGroundColor(COLORS.sendBtnDisabled)
-        self.sendBtn:setEnabled(false)
+        if self.sendBtn.titleLabel then
+            self.sendBtn.titleLabel:setString("...")
+        end
+        if self.sendBtn.bgNode then
+            local c = COLORS.sendBtnDisabled
+            self.sendBtn.bgNode:setColor(cc.c3b(c.r, c.g, c.b))
+        end
     else
-        self.sendBtn:setTitleText("发送")
-        self.sendBtn:setBackGroundColor(COLORS.sendBtn)
-        self.sendBtn:setEnabled(true)
+        if self.sendBtn.titleLabel then
+            self.sendBtn.titleLabel:setString("发送")
+        end
+        if self.sendBtn.bgNode then
+            local c = COLORS.sendBtn
+            self.sendBtn.bgNode:setColor(cc.c3b(c.r, c.g, c.b))
+        end
     end
 end
 

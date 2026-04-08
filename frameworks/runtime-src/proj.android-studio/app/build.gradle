@@ -3,8 +3,8 @@ import org.apache.tools.ant.taskdefs.condition.Os
 apply plugin: 'com.android.application'
 
 android {
+    namespace 'org.cocos2dx.hellolua'
     compileSdkVersion 30
-    buildToolsVersion "30.0.3"
     ndkVersion "16.1.4479499"
 
     defaultConfig {
@@ -13,32 +13,6 @@ android {
         targetSdkVersion 30
         versionCode 1
         versionName "1.0"
-
-        externalNativeBuild {
-            ndkBuild {
-                if (!project.hasProperty("PROP_NDK_MODE") || PROP_NDK_MODE.compareTo('none') != 0) {
-                    // skip the NDK Build step if PROP_NDK_MODE is none
-                    targets 'cocos2dlua'
-                    arguments 'NDK_TOOLCHAIN_VERSION=clang'
-                    arguments 'APP_PLATFORM=android-16'
-
-                    def module_paths = [project.file("../../../cocos2d-x").absolutePath,
-                                        project.file("../../../cocos2d-x/cocos").absolutePath,
-                                        project.file("../../../cocos2d-x/external").absolutePath]
-                    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
-                        // should use '/'
-                        module_paths = module_paths.collect {it.replaceAll('\\\\', '/')}
-                        arguments 'NDK_MODULE_PATH=' + module_paths.join(";")
-                    }
-                    else {
-                        arguments 'NDK_MODULE_PATH=' + module_paths.join(':')
-                    }
-
-                    arguments '-j' + Runtime.runtime.availableProcessors()
-                    abiFilters.addAll(PROP_APP_ABI.split(':').collect{it as String})
-                }
-            }
-        }
     }
 
     sourceSets.main {
@@ -46,20 +20,11 @@ android {
         res.srcDir "res"
         jniLibs.srcDir "libs"
         manifest.srcFile "AndroidManifest.xml"
-        assets.srcDir "assets"
-    }
-
-    externalNativeBuild {
-        ndkBuild {
-            if (!project.hasProperty("PROP_NDK_MODE") || PROP_NDK_MODE.compareTo('none') != 0) {
-                // skip the NDK Build step if PROP_NDK_MODE is none
-                path "jni/Android.mk"
-            }
-        }
+        // AGP 8.x: 将游戏资源和源码作为 assets 源目录
+        assets.srcDirs = ["assets"]
     }
 
     signingConfigs {
-
        release {
             if (project.hasProperty("RELEASE_STORE_FILE")) {
                 storeFile file(RELEASE_STORE_FILE)
@@ -72,12 +37,6 @@ android {
 
     buildTypes {
         debug {
-            externalNativeBuild {
-                ndkBuild {
-                    arguments 'NDK_DEBUG=1'
-                }
-            }
-            // 禁用资源压缩（模型文件太大）
             crunchPngs false
         }
         release {
@@ -86,23 +45,120 @@ android {
             if (project.hasProperty("RELEASE_STORE_FILE")) {
                 signingConfig signingConfigs.release
             }
-
-            externalNativeBuild {
-                ndkBuild {
-                    arguments 'NDK_DEBUG=0'
-                }
-            }
         }
     }
 }
+
+// ==================== 手动 ndk-build (绕过 AGP 8.x Windows 路径 bug) ====================
+
+def getNdkBuildPath() {
+    def ndkDir = android.ndkDirectory
+    if (ndkDir == null) {
+        // 尝试从 android.sdk.ndkDirectory 获取
+        def sdkDir = android.sdkDirectory
+        ndkDir = new File(sdkDir, "ndk/${android.ndkVersion}")
+    }
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        return new File(ndkDir, "ndk-build.cmd").absolutePath.replace('\\', '/')
+    }
+    return new File(ndkDir, "ndk-build").absolutePath
+}
+
+def getNdkModulePath() {
+    def module_paths = [
+        project.file("../../../cocos2d-x").absolutePath,
+        project.file("../../../cocos2d-x/cocos").absolutePath,
+        project.file("../../../cocos2d-x/external").absolutePath
+    ]
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        module_paths = module_paths.collect { it.replaceAll('\\\\', '/') }
+        return module_paths.join(";")
+    }
+    return module_paths.join(':')
+}
+
+task ndkBuildDebug(type: Exec) {
+    description 'Build native libraries with ndk-build (debug)'
+    workingDir file("jni")
+
+    def ndkBuild = getNdkBuildPath()
+    def modulePath = getNdkModulePath()
+    def jniDir = projectDir.absolutePath.replace('\\', '/')
+    def libsDir = file("libs").absolutePath.replace('\\', '/')
+    def objDir = file(".cxx/debug/obj").absolutePath.replace('\\', '/')
+
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        commandLine 'cmd', '/c', ndkBuild,
+            'NDK_DEBUG=1',
+            'NDK_TOOLCHAIN_VERSION=clang',
+            'APP_PLATFORM=android-16',
+            "NDK_MODULE_PATH=${modulePath}",
+            "NDK_PROJECT_PATH=${jniDir}",
+            "NDK_OUT=${objDir}",
+            "NDK_LIBS_OUT=${libsDir}",
+            '-j' + Runtime.runtime.availableProcessors(),
+            "APP_ABI=${PROP_APP_ABI.replace(':', ' ')}"
+    } else {
+        commandLine ndkBuild,
+            'NDK_DEBUG=1',
+            'NDK_TOOLCHAIN_VERSION=clang',
+            'APP_PLATFORM=android-16',
+            "NDK_MODULE_PATH=${modulePath}",
+            '-j' + Runtime.runtime.availableProcessors(),
+            "APP_ABI=${PROP_APP_ABI.replace(':', ' ')}"
+    }
+}
+
+task ndkBuildRelease(type: Exec) {
+    description 'Build native libraries with ndk-build (release)'
+    workingDir file("jni")
+
+    def ndkBuild = getNdkBuildPath()
+    def modulePath = getNdkModulePath()
+    def jniDir = projectDir.absolutePath.replace('\\', '/')
+    def libsDir = file("libs").absolutePath.replace('\\', '/')
+    def objDir = file(".cxx/release/obj").absolutePath.replace('\\', '/')
+
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        commandLine 'cmd', '/c', ndkBuild,
+            'NDK_DEBUG=0',
+            'NDK_TOOLCHAIN_VERSION=clang',
+            'APP_PLATFORM=android-16',
+            "NDK_MODULE_PATH=${modulePath}",
+            "NDK_PROJECT_PATH=${jniDir}",
+            "NDK_OUT=${objDir}",
+            "NDK_LIBS_OUT=${libsDir}",
+            '-j' + Runtime.runtime.availableProcessors(),
+            "APP_ABI=${PROP_APP_ABI.replace(':', ' ')}"
+    } else {
+        commandLine ndkBuild,
+            'NDK_DEBUG=0',
+            'NDK_TOOLCHAIN_VERSION=clang',
+            'APP_PLATFORM=android-16',
+            "NDK_MODULE_PATH=${modulePath}",
+            '-j' + Runtime.runtime.availableProcessors(),
+            "APP_ABI=${PROP_APP_ABI.replace(':', ' ')}"
+    }
+}
+
+// 让 Java 编译依赖 ndk-build（确保 .so 文件先构建好）
+tasks.whenTaskAdded { task ->
+    if (task.name.startsWith('merge') && task.name.endsWith('JniLibFolders')) {
+        if (task.name.contains('Debug')) {
+            task.dependsOn ndkBuildDebug
+        } else if (task.name.contains('Release')) {
+            task.dependsOn ndkBuildRelease
+        }
+    }
+}
+
+// ==================== Lua 编译（暂禁用） ====================
 
 def getCocosCommandPath() {
     if (Os.isFamily(Os.FAMILY_WINDOWS)) {
         return 'cocos.bat'
     }
     else {
-        // on unix like system, can not get environments variables easily
-        // so run a shell script to get environment variable sets by cocos2d-x setup.py
         new ByteArrayOutputStream().withStream { os ->
             def result = exec {
                 executable project.file('get_environment.sh')
@@ -114,7 +170,6 @@ def getCocosCommandPath() {
     }
 }
 
-// a method used to invoke the cocos luacompile command
 def compileLua(srcDir, dstDir, doCompile, is64bit, doEncrypt) {
     def compileArgs = ['luacompile', '-s', srcDir, '-d', dstDir]
     if (!doCompile) {
@@ -132,124 +187,56 @@ def compileLua(srcDir, dstDir, doCompile, is64bit, doEncrypt) {
         compileArgs << project.property('PROP_LUA_ENCRYPT_SIGN')
     }
 
-    // commandLine compileArgs
     println 'running command : ' + 'cocos ' + compileArgs.join(' ')
     exec {
-        // if you meet problem, just replace `getCocosCommandPath()` to the path of cocos command
         executable getCocosCommandPath()
         args compileArgs
     }
 
-    // remove the lua files in dstDir
     delete fileTree(dstDir) {
         include '**/*.lua'
     }
 }
 
-android.applicationVariants.all { variant ->
-    // delete previous files first
-    delete "${buildDir}/intermediates/assets/${variant.dirName}"
+// ==================== 资源复制（游戏 Lua 源码和资源） ====================
 
-    variant.mergeAssets.doLast {
-        copy {
-           from "${buildDir}/../../../../../res"
-           into "${buildDir}/intermediates/assets/${variant.dirName}/res"
-        }
+// 复制游戏资源到 assets 目录，确保打包进 APK
+task copyGameResources {
+    doLast {
+        def gameRoot = project.file("../../../..").absolutePath
+        def assetsDir = "${projectDir}/assets"
 
         copy {
-            from "${buildDir}/../../../../../src"
-            into "${buildDir}/intermediates/assets/${variant.dirName}/src"
+            from "${gameRoot}/res"
+            into "${assetsDir}/res"
         }
 
-        // 复制 assets 目录（包含 LLM 模型）
         copy {
-            from "${projectDir}/assets"
-            into "${buildDir}/intermediates/assets/${variant.dirName}"
-        }
-    }
-
-    // compile & encrypt the scripts if necessary
-    def compileScript = false  // 强制禁用 Lua 编译（需要 cocos 命令）
-    // def compileScript = (variant.name.compareTo('release') == 0)
-    if (project.hasProperty('PROP_COMPILE_SCRIPT')) {
-        compileScript = (PROP_COMPILE_SCRIPT.compareTo('1') == 0)
-    }
-
-    def encryptLua = project.hasProperty('PROP_LUA_ENCRYPT') && (PROP_LUA_ENCRYPT.compareTo('1') == 0)
-    if (compileScript || encryptLua) {
-        // -1 means not build bytecode
-        // 0 means build 32bit only
-        // 1 means build 64bit only
-        // 2 means build both 32bit & 64bit
-        def buildType = -1
-        if (compileScript) {
-            def need64 = false
-            def need32 = false
-            def abis = PROP_APP_ABI.split(':').collect{it as String}
-            abis.each{ abi->
-                if (abi.compareTo('arm64-v8a') == 0) {
-                    need64 = true
-                }
-                else
-                {
-                    need32 = true
-                }
-            }
-
-            if (need64 && need32) {
-                buildType = 2
-            }
-            else if (need64) {
-                buildType = 1
-            }
-            else {
-                buildType = 0
-            }
-        }
-
-        // invoke cocos command to compile & encrypt the lua files
-        switch (buildType) {
-            case -1:
-                compileLua("${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           "${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           false, false, encryptLua)
-                break
-            case 0:
-                compileLua("${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           "${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           true, false, encryptLua)
-                break
-            case 1:
-                compileLua("${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           "${buildDir}/intermediates/assets/${variant.dirName}/src/64bit",
-                           true, true, encryptLua)
-
-                // remove the lua files in src dir
-                delete fileTree("${buildDir}/intermediates/assets/${variant.dirName}/src") {
-                    include '**/*.lua'
-                }
-                delete "${buildDir}/intermediates/assets/${variant.dirName}/src/cocos"
-                break
-            case 2:
-                compileLua("${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           "${buildDir}/intermediates/assets/${variant.dirName}/src/64bit",
-                           true, true, encryptLua)
-                compileLua("${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           "${buildDir}/intermediates/assets/${variant.dirName}/src",
-                           true, false, encryptLua)
-                break
+            from "${gameRoot}/src"
+            into "${assetsDir}/src"
         }
     }
 }
+
+tasks.whenTaskAdded { task ->
+    if (task.name.startsWith('merge') && task.name.endsWith('Assets')) {
+        task.dependsOn copyGameResources
+    }
+}
+
+// ==================== 依赖 ====================
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation project(':libcocos2dx')
 
-    // LiteRT-LM 核心库 (0.8.0 兼容 Java 11)
-    implementation('com.google.ai.edge.litertlm:litertlm-android:0.8.0') {
+    // LiteRT-LM 核心库 (0.10.0 修复 gemma-4 初始化崩溃)
+    implementation('com.google.ai.edge.litertlm:litertlm-android:0.10.0') {
         exclude group: 'com.google.errorprone', module: 'error_prone_annotations'
     }
+
+    // Kotlin 标准库 (LiteRT-LM 0.10.0 需要)
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.0.0'
 
     // TensorFlow Lite GPU 加速支持
     implementation 'com.google.android.gms:play-services-tflite-java:16.4.0'

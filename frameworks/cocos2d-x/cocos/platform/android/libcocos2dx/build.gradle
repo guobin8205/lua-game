@@ -1,12 +1,12 @@
 apply plugin: 'com.android.library'
 
 android {
-    compileSdkVersion 22
-    buildToolsVersion '25.0.0'
+    namespace 'org.cocos2dx.lib'
+    compileSdkVersion 30
 
     defaultConfig {
-        minSdkVersion 10
-        targetSdkVersion PROP_TARGET_SDK_VERSION
+        minSdkVersion 23
+        targetSdkVersion 30
         versionCode 1
         versionName "1.0"
     }
@@ -26,5 +26,5 @@ android {
 }
 
 dependencies {
-    compile fileTree(dir: '../java/libs', include: ['*.jar'])
+    implementation fileTree(dir: '../java/libs', include: ['*.jar'])
 }

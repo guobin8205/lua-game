@@ -5,6 +5,16 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.google.ai.edge.litertlm.Backend;
+import com.google.ai.edge.litertlm.Contents;
+import com.google.ai.edge.litertlm.Engine;
+import com.google.ai.edge.litertlm.EngineConfig;
+import com.google.ai.edge.litertlm.Conversation;
+import com.google.ai.edge.litertlm.ConversationConfig;
+import com.google.ai.edge.litertlm.Message;
+import com.google.ai.edge.litertlm.MessageCallback;
+import com.google.ai.edge.litertlm.SamplerConfig;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -16,9 +26,6 @@ import java.util.concurrent.TimeUnit;
 /**
  * LiteRT-LM 引擎封装类
  * 负责模型加载、初始化和推理
- *
- * 注意：此类需要 LiteRT-LM SDK 依赖
- * implementation 'com.google.ai.edge.litertlm:litertlm-android:latest.release'
  */
 public class LLMEngine {
     private static final String TAG = "LLMEngine";
@@ -26,9 +33,9 @@ public class LLMEngine {
     // 单例实例
     private static volatile LLMEngine sInstance;
 
-    // LiteRT-LM 引擎（需要 SDK）
-    private Object mEngine;
-    private Object mConversation;
+    // LiteRT-LM 引擎
+    private Engine mEngine;
+    private Conversation mConversation;
 
     // 状态管理
     private volatile boolean mInitialized = false;
@@ -64,10 +71,6 @@ public class LLMEngine {
 
     /**
      * 初始化引擎（异步）
-     * @param context Android Context
-     * @param modelPath 模型文件路径（相对于 assets 或绝对路径）
-     * @param backend 后端类型：CPU, GPU, NPU
-     * @param callback 初始化完成回调
      */
     public void initializeAsync(Context context, String modelPath, String backend,
                                 final InitCallback callback) {
@@ -116,7 +119,7 @@ public class LLMEngine {
     }
 
     /**
-     * 内部初始化逻辑
+     * 内部初始化逻辑 - 使用 LiteRT-LM SDK
      */
     private void initializeInternal() throws Exception {
         // 解析模型路径
@@ -131,22 +134,35 @@ public class LLMEngine {
         Log.i(TAG, "Model size: " + (modelFile.length() / 1024 / 1024) + " MB");
         Log.i(TAG, "Backend: " + mBackend);
 
-        // TODO: 初始化 LiteRT-LM Engine
-        // 这里需要根据实际的 LiteRT-LM SDK API 来实现
-        // 示例代码（需要根据实际 SDK 调整）:
-        /*
-        EngineConfig config = new EngineConfig(
-            absoluteModelPath,
-            Backend.CPU() // 或 GPU/NPU
-        );
+        // 创建 Backend (SDK 0.10.0: Backend 是 sealed class，用构造函数创建)
+        Backend backend;
+        switch (mBackend.toUpperCase()) {
+            case "GPU":
+                backend = new Backend.GPU();
+                break;
+            case "NPU":
+                backend = new Backend.CPU();  // NPU 需要设备路径，降级为 CPU
+                break;
+            default:
+                backend = new Backend.CPU();
+                break;
+        }
+
+        // 创建 EngineConfig(path, textBackend, visionBackend, audioBackend, maxNumTokens, cacheDir)
+        EngineConfig config = new EngineConfig(absoluteModelPath, backend, null, null, null, null);
+
+        // 创建并初始化 Engine
         mEngine = new Engine(config);
         mEngine.initialize();
-        mConversation = mEngine.createConversation();
-        */
 
-        // 临时：模拟初始化成功（实际使用时替换为真实 SDK 调用）
-        mEngine = new Object(); // 占位
-        mConversation = new Object(); // 占位
+        // 创建 ConversationConfig (SDK 0.10.0: systemInstruction, initialMessages, tools, samplerConfig)
+        ConversationConfig convConfig = new ConversationConfig(
+            Contents.Companion.of("你是一个有用的AI助手，请用中文回答问题。"),
+            java.util.Collections.emptyList(),
+            java.util.Collections.emptyList(),
+            new SamplerConfig(64, 0.95, 0.8, 0)
+        );
+        mConversation = mEngine.createConversation(convConfig);
 
         Log.i(TAG, "Engine initialization completed");
     }
@@ -217,7 +233,7 @@ public class LLMEngine {
     /**
      * 发送消息并获取完整响应（异步）
      */
-    public void sendMessageAsync(String message, final MessageCallback callback) {
+    public void sendMessageAsync(String message, final LLMCallback callback) {
         if (!mInitialized || mConversation == null) {
             if (callback != null) {
                 mMainHandler.post(() -> callback.onError("Engine not initialized"));
@@ -240,73 +256,41 @@ public class LLMEngine {
     }
 
     /**
-     * 生成响应
+     * 生成响应 - 使用 LiteRT-LM SDK 异步流式输出
      */
-    private void generateResponse(String message, final MessageCallback callback) {
-        // TODO: 使用 LiteRT-LM SDK 生成响应
-        // 示例代码（需要根据实际 SDK 调整）:
-        /*
-        StringBuilder response = new StringBuilder();
-        mConversation.sendMessageAsync(message, new LiteRTCallback() {
-            @Override
-            public void onToken(String token) {
-                response.append(token);
-                mMainHandler.post(() -> callback.onToken(token));
-            }
-
-            @Override
-            public void onComplete() {
-                mMainHandler.post(() -> callback.onComplete(response.toString()));
-            }
-
-            @Override
-            public void onError(Throwable t) {
-                mMainHandler.post(() -> callback.onError(t.getMessage()));
-            }
-        });
-        */
-
-        // 临时：模拟流式输出（实际使用时替换为真实 SDK 调用）
-        simulateStreamingResponse(message, callback);
-    }
-
-    /**
-     * 模拟流式输出（仅用于测试，实际使用时替换为 LiteRT-LM SDK 调用）
-     */
-    private void simulateStreamingResponse(String message, final MessageCallback callback) {
-        // 模拟 AI 响应
-        String response = "这是一条模拟的 AI 响应。您说的是: \"" + message + "\"\n\n" +
-                "请确保已正确集成 LiteRT-LM SDK 并替换此模拟代码。\n" +
-                "SDK 依赖: implementation 'com.google.ai.edge.litertlm:litertlm-android:latest.release'";
-
-        // 模拟流式输出
+    private void generateResponse(String text, final LLMCallback callback) {
         final StringBuilder fullResponse = new StringBuilder();
-        String[] words = response.split("");
 
-        for (int i = 0; i < words.length; i++) {
-            final String token = words[i];
-            final int delay = 20 + (int)(Math.random() * 30);
-
-            try {
-                Thread.sleep(delay);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
+        mConversation.sendMessageAsync(text, new MessageCallback() {
+            @Override
+            public void onMessage(Message msg) {
+                final String token = msg.toString();
+                fullResponse.append(token);
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onToken(token);
+                    }
+                });
             }
 
-            fullResponse.append(token);
-            mMainHandler.post(() -> {
-                if (callback != null) {
-                    callback.onToken(token);
-                }
-            });
-        }
-
-        mMainHandler.post(() -> {
-            if (callback != null) {
-                callback.onComplete(fullResponse.toString());
+            @Override
+            public void onDone() {
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onComplete(fullResponse.toString());
+                    }
+                });
             }
-        });
+
+            @Override
+            public void onError(Throwable throwable) {
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onError(throwable.getMessage());
+                    }
+                });
+            }
+        }, null);
     }
 
     /**
@@ -321,7 +305,7 @@ public class LLMEngine {
         final Exception[] error = new Exception[1];
         final CountDownLatch latch = new CountDownLatch(1);
 
-        sendMessageAsync(message, new MessageCallback() {
+        sendMessageAsync(message, new LLMCallback() {
             @Override
             public void onToken(String token) {}
 
@@ -356,12 +340,23 @@ public class LLMEngine {
      */
     public void resetConversation() {
         mExecutor.execute(() -> {
-            // TODO: 重置 LiteRT-LM 会话
-            // if (mEngine != null && mConversation != null) {
-            //     mConversation.close();
-            //     mConversation = mEngine.createConversation();
-            // }
-            Log.i(TAG, "Conversation reset");
+            try {
+                if (mEngine != null) {
+                    if (mConversation != null) {
+                        mConversation.close();
+                    }
+                    ConversationConfig convConfig = new ConversationConfig(
+                        Contents.Companion.of("你是一个有用的AI助手，请用中文回答问题。"),
+                        null,
+                        null,
+                        new SamplerConfig(64, 0.95, 0.8, 0)
+                    );
+                    mConversation = mEngine.createConversation(convConfig);
+                    Log.i(TAG, "Conversation reset");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to reset conversation", e);
+            }
         });
     }
 
@@ -370,6 +365,13 @@ public class LLMEngine {
      */
     public boolean isInitialized() {
         return mInitialized;
+    }
+
+    /**
+     * 提交异步任务到引擎线程池
+     */
+    public void submitTask(Runnable task) {
+        mExecutor.execute(task);
     }
 
     /**
@@ -384,18 +386,18 @@ public class LLMEngine {
      */
     public void release() {
         mExecutor.execute(() -> {
-            // TODO: 释放 LiteRT-LM 资源
-            // if (mConversation != null) {
-            //     mConversation.close();
-            //     mConversation = null;
-            // }
-            // if (mEngine != null) {
-            //     mEngine.close();
-            //     mEngine = null;
-            // }
-
-            mEngine = null;
-            mConversation = null;
+            try {
+                if (mConversation != null) {
+                    mConversation.close();
+                    mConversation = null;
+                }
+                if (mEngine != null) {
+                    mEngine.close();
+                    mEngine = null;
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing engine", e);
+            }
             mInitialized = false;
             Log.i(TAG, "Engine released");
         });
@@ -410,9 +412,9 @@ public class LLMEngine {
     }
 
     /**
-     * 消息回调接口
+     * 消息回调接口（本地定义，避免与 SDK 的 MessageCallback 冲突）
      */
-    public interface MessageCallback {
+    public interface LLMCallback {
         void onToken(String token);
         void onComplete(String fullResponse);
         void onError(String errorMessage);

@@ -1,8 +1,9 @@
 --[[
-    LLM.lua - LiteRT-LM Lua 封装模块（支持动态下载）
+    LLM.lua - LiteRT-LM Lua 封装模块（Java 层流式下载）
 
     功能：
-    - 动态下载模型文件（纯 Lua 实现）
+    - Java 层流式下载模型文件（不 OOM）
+    - 真实下载进度回调
     - 初始化 LiteRT-LM 引擎
     - 支持异步聊天（带回调）
     - 支持流式输出
@@ -39,8 +40,6 @@ local LLM = {}
 local CONFIG = {
     -- 默认模型下载地址 (ModelScope)
     defaultModelUrl = "https://modelscope.cn/models/litert-community/gemma-4-E2B-it-litert-lm/resolve/master/gemma-4-E2B-it.litertlm",
-    -- 模型保存目录（Android 外部存储）
-    modelDir = "/sdcard/Android/data/org.cocos2dx.hellolua/files/models",
     -- 模型文件名
     modelFileName = "gemma-4-E2B-it.litertlm",
 }
@@ -56,7 +55,10 @@ local _platform = cc.Application:getInstance():getTargetPlatform()
 local _initCallbacks = {}
 local _callbackIdCounter = 0
 local _callbackMap = {}
-local _modelPath = nil
+
+-- 下载回调（单次下载，不需要 ID 映射）
+local _downloadProgressCallback = nil
+local _downloadCompleteCallback = nil
 
 -- Java 类名
 local CLASS_NAME = "org/cocos2dx/lua/llm/LLMService"
@@ -99,7 +101,7 @@ end
 -- ==================== 全局回调函数 ====================
 
 -- 初始化回调（Java 层调用）
-__LLM_ON_INIT__ = function(result)
+cc.exports.__LLM_ON_INIT__ = function(result)
     if result == "SUCCESS" then
         _initialized = true
         _lastError = nil
@@ -124,7 +126,7 @@ __LLM_ON_INIT__ = function(result)
 end
 
 -- Token 回调（流式输出）
-__LLM_ON_TOKEN__ = function(data)
+cc.exports.__LLM_ON_TOKEN__ = function(data)
     local colonPos = string.find(data, ":")
     if colonPos then
         local id = tonumber(string.sub(data, 1, colonPos - 1))
@@ -137,7 +139,7 @@ __LLM_ON_TOKEN__ = function(data)
 end
 
 -- 简单聊天回调
-__LLM_ON_CHAT__ = function(data)
+cc.exports.__LLM_ON_CHAT__ = function(data)
     local colonPos = string.find(data, ":")
     if colonPos then
         local id = tonumber(string.sub(data, 1, colonPos - 1))
@@ -154,59 +156,115 @@ __LLM_ON_CHAT__ = function(data)
     end
 end
 
--- ==================== 文件操作辅助函数 ====================
-
--- 检查文件是否存在
-local function fileExists(filePath)
-    local file = io.open(filePath, "rb")
-    if file then
-        file:close()
-        return true
+-- 流式聊天完成回调
+cc.exports.__LLM_ON_COMPLETE__ = function(data)
+    local colonPos = string.find(data, ":")
+    if colonPos then
+        local id = tonumber(string.sub(data, 1, colonPos - 1))
+        local response = string.sub(data, colonPos + 1)
+        local callback = popCallback(id)
+        if callback then
+            callback(response)
+        end
     end
-    return false
 end
 
--- 获取文件大小
-local function getFileSize(filePath)
-    local file = io.open(filePath, "rb")
-    if file then
-        local size = file:seek("end")
-        file:close()
-        return size
+-- 流式聊天错误回调
+cc.exports.__LLM_ON_ERROR__ = function(data)
+    local colonPos = string.find(data, ":")
+    if colonPos then
+        local id = tonumber(string.sub(data, 1, colonPos - 1))
+        local errorMsg = string.sub(data, colonPos + 1)
+        local callback = popCallback(id)
+        if callback then
+            callback(errorMsg)
+        end
     end
-    return 0
 end
 
--- 创建目录
-local function mkdirs(path)
-    -- 使用 Java 层创建目录（更可靠）
+-- 下载进度回调（Java 层调用，数据为纯数字字符串）
+cc.exports.__LLM_ON_DOWNLOAD_PROGRESS__ = function(data)
+    local percent = tonumber(data)
+    if percent then
+        _downloadProgress = percent
+        if _downloadProgressCallback then
+            _downloadProgressCallback(percent)
+        end
+    end
+end
+
+-- 下载完成回调（Java 层调用，数据为文件路径）
+cc.exports.__LLM_ON_DOWNLOAD_COMPLETE__ = function(data)
+    _downloading = false
+    _downloadProgress = 100
+    print("[LLM] Download completed:", data)
+    if _downloadCompleteCallback then
+        if string.find(data, "^ERROR:") then
+            _downloadCompleteCallback(nil, string.sub(data, 7))
+        else
+            _downloadCompleteCallback(data, nil)
+        end
+    end
+end
+
+-- 下载错误回调（Java 层调用，数据为错误信息）
+cc.exports.__LLM_ON_DOWNLOAD_ERROR__ = function(data)
+    _downloading = false
+    print("[LLM] Download error:", data)
+    if _downloadCompleteCallback then
+        _downloadCompleteCallback(nil, data)
+    end
+end
+
+-- ==================== 模型路径相关 ====================
+
+--[[
+    获取模型存储目录（通过 Java 层获取正确路径）
+]]
+function LLM.getModelDir()
     if isAndroid() then
         local luaj = getLuaj()
-        luaj.callStaticMethod(
+        local ok, ret = luaj.callStaticMethod(
             CLASS_NAME,
-            "createDirs",
-            {path},
-            "(Ljava/lang/String;)V"
+            "getModelDir",
+            {},
+            "()Ljava/lang/String;"
         )
+        if ok and ret then
+            return ret
+        end
     end
+    return "/sdcard/Android/data/org.cocos2dx.hellolua/files/models"
+end
+
+--[[
+    获取模型文件完整路径
+]]
+function LLM.getModelPath()
+    return LLM.getModelDir() .. "/" .. CONFIG.modelFileName
 end
 
 -- ==================== 下载相关 ====================
 
 --[[
     检查模型是否已下载
-
-    @return boolean
 ]]
 function LLM.isModelDownloaded()
-    local modelPath = CONFIG.modelDir .. "/" .. CONFIG.modelFileName
-    return fileExists(modelPath)
+    if isAndroid() then
+        local luaj = getLuaj()
+        local ok, ret = luaj.callStaticMethod(
+            CLASS_NAME,
+            "checkModelExists",
+            {LLM.getModelPath()},
+            "(Ljava/lang/String;)Z"
+        )
+        return ok and ret
+    end
+    return false
 end
 
 --[[
     获取下载进度
-
-    @return number 0-100
 ]]
 function LLM.getDownloadProgress()
     return _downloadProgress
@@ -214,15 +272,13 @@ end
 
 --[[
     是否正在下载
-
-    @return boolean
 ]]
 function LLM.isDownloading()
     return _downloading
 end
 
 --[[
-    下载模型（纯 Lua 实现）
+    下载模型（Java 层流式下载，不会 OOM）
 
     @param config table
         - modelUrl: string 模型下载地址（可选，使用默认地址）
@@ -248,7 +304,7 @@ function LLM.downloadModel(config)
     if LLM.isModelDownloaded() then
         print("[LLM] Model already downloaded")
         if config and config.onComplete then
-            config.onComplete(CONFIG.modelDir .. "/" .. CONFIG.modelFileName, nil)
+            config.onComplete(LLM.getModelPath(), nil)
         end
         return true
     end
@@ -256,117 +312,52 @@ function LLM.downloadModel(config)
     _downloading = true
     _downloadProgress = 0
 
+    -- 注册回调
+    _downloadProgressCallback = config and config.onProgress
+    _downloadCompleteCallback = config and config.onComplete
+
     local modelUrl = config and config.modelUrl or CONFIG.defaultModelUrl
-    local modelPath = CONFIG.modelDir .. "/" .. CONFIG.modelFileName
-    local tempPath = modelPath .. ".tmp"
+    local modelPath = LLM.getModelPath()
 
     print("[LLM] Starting download:", modelUrl)
     print("[LLM] Target path:", modelPath)
 
-    -- 确保目录存在
-    mkdirs(CONFIG.modelDir)
+    -- 调用 Java 层流式下载
+    local luaj = getLuaj()
+    local ok, ret = luaj.callStaticMethod(
+        CLASS_NAME,
+        "downloadModel",
+        {modelUrl, modelPath},
+        "(Ljava/lang/String;Ljava/lang/String;)Z"
+    )
 
-    -- 创建 HTTP 请求
-    local xhr = cc.XMLHttpRequest:new()
-    xhr.responseType = cc.XMLHTTPREQUEST_RESPONSE_ARRAY_BUFFER
-    xhr:open("GET", modelUrl)
-
-    -- 进度回调
-    local progressCallback = config and config.onProgress
-    local completeCallback = config and config.onComplete
-
-    -- 注册 readyStateChange 回调
-    xhr:registerScriptHandler(function()
-        if xhr.readyState == 4 then
-            _downloading = false
-
-            if xhr.status == 200 then
-                -- 下载成功，保存文件
-                local response = xhr.response
-                if response then
-                    -- 使用 Java 层保存文件（处理大文件）
-                    local luaj = getLuaj()
-                    local ok, err = luaj.callStaticMethod(
-                        CLASS_NAME,
-                        "saveFile",
-                        {tempPath, response},
-                        "(Ljava/lang/String;[B)Z"
-                    )
-
-                    if ok and err then
-                        -- 重命名为最终文件
-                        os.rename(tempPath, modelPath)
-                        _modelPath = modelPath
-                        _downloadProgress = 100
-                        print("[LLM] Download completed:", modelPath)
-
-                        if completeCallback then
-                            completeCallback(modelPath, nil)
-                        end
-                    else
-                        print("[LLM] Failed to save file:", err)
-                        if completeCallback then
-                            completeCallback(nil, "Failed to save file: " .. (err or "unknown"))
-                        end
-                    end
-                else
-                    print("[LLM] Empty response")
-                    if completeCallback then
-                        completeCallback(nil, "Empty response from server")
-                    end
-                end
-            else
-                print("[LLM] Download failed, status:", xhr.status)
-                if completeCallback then
-                    completeCallback(nil, "HTTP error: " .. xhr.status)
-                end
-            end
-
-            xhr:unregisterScriptHandler()
-            xhr:release()
+    if not ok then
+        _downloading = false
+        print("[LLM] Failed to start download:", ret)
+        if _downloadCompleteCallback then
+            _downloadCompleteCallback(nil, "Failed to start download: " .. (ret or "unknown"))
         end
-    end)
-
-    -- 模拟进度更新（XMLHttpRequest 不支持真实进度）
-    -- 使用定时器模拟进度
-    local scheduler = cc.Director:getInstance():getScheduler()
-    local schedulerEntry = nil
-    local fakeProgress = 0
-
-    if progressCallback then
-        schedulerEntry = scheduler:scheduleScriptFunc(function(dt)
-            if _downloading and fakeProgress < 99 then
-                fakeProgress = fakeProgress + 0.5
-                _downloadProgress = math.min(fakeProgress, 99)
-                progressCallback(_downloadProgress)
-            end
-        end, 0.5, false)
-    end
-
-    -- 发送请求
-    xhr:send()
-
-    -- 清理定时器（在下载完成后）
-    if schedulerEntry then
-        -- 延迟清理
-        performWithDelay(function()
-            if schedulerEntry then
-                scheduler:unscheduleScriptEntry(schedulerEntry)
-                schedulerEntry = nil
-            end
-        end, 300)  -- 5分钟后自动清理
+        return false
     end
 
     return true
 end
 
--- 延迟执行辅助函数
-function performWithDelay(callback, delay)
-    local scheduler = cc.Director:getInstance():getScheduler()
-    local entry = scheduler:scheduleScriptFunc(function()
-        scheduler:unscheduleScriptEntry(entry)
-        if callback then callback() end
-    end, delay, false)
+--[[
+    取消下载
+]]
+function LLM.cancelDownload()
+    if isAndroid() and _downloading then
+        local luaj = getLuaj()
+        luaj.callStaticMethod(
+            CLASS_NAME,
+            "cancelDownload",
+            {},
+            "()V"
+        )
+        _downloading = false
+        print("[LLM] Download cancelled")
+    end
 end
 
 -- ==================== 初始化相关 ====================
@@ -424,7 +415,6 @@ function LLM.init(config)
 
     _initializing = true
     _lastError = nil
-    _modelPath = modelPath
 
     local luaj = getLuaj()
     local ok, ret = luaj.callStaticMethod(
@@ -447,6 +437,7 @@ end
 
 --[[
     初始化并自动下载模型（如果需要）
+    流程：检查模型 → 下载（带进度） → 初始化引擎
 
     @param config table 配置表
         - modelUrl: string 模型下载地址（可选）
@@ -465,7 +456,7 @@ function LLM.initWithDownload(config)
         return false
     end
 
-    local modelPath = CONFIG.modelDir .. "/" .. CONFIG.modelFileName
+    local modelPath = LLM.getModelPath()
 
     -- 如果模型已存在，直接初始化
     if LLM.isModelDownloaded() then
@@ -488,7 +479,7 @@ function LLM.initWithDownload(config)
                     config.onInit(false, "Download failed: " .. error)
                 end
             else
-                -- 下载完成，初始化
+                -- 下载完成，初始化引擎
                 LLM.init({
                     modelPath = filePath,
                     backend = config and config.backend or "GPU",
@@ -501,8 +492,6 @@ end
 
 --[[
     检查 LLM 是否已初始化完成
-
-    @return boolean
 ]]
 function LLM.isReady()
     if not isAndroid() then
@@ -530,20 +519,9 @@ end
 
 --[[
     获取最后的错误信息
-
-    @return string|nil
 ]]
 function LLM.getLastError()
     return _lastError
-end
-
---[[
-    获取模型路径
-
-    @return string|nil
-]]
-function LLM.getModelPath()
-    return _modelPath
 end
 
 -- ==================== 聊天相关 ====================
@@ -692,6 +670,8 @@ function LLM.release()
     _lastError = nil
     _callbackMap = {}
     _initCallbacks = {}
+    _downloadProgressCallback = nil
+    _downloadCompleteCallback = nil
 
     print("[LLM] Resources released")
 end

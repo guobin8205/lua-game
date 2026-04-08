@@ -1,6 +1,8 @@
 package org.cocos2dx.lua.llm;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import org.cocos2dx.lib.Cocos2dxActivity;
@@ -9,6 +11,9 @@ import org.cocos2dx.lib.Cocos2dxLuaJavaBridge;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 /**
  * LLM 服务类 - 提供 Lua 可调用的静态方法
@@ -29,6 +34,10 @@ import java.io.IOException;
  */
 public class LLMService {
     private static final String TAG = "LLMService";
+    private static final Handler sHandler = new Handler(Looper.getMainLooper());
+
+    // 下载取消标志
+    private static volatile boolean sDownloadCancelled = false;
 
     // ==================== 初始化相关 ====================
 
@@ -108,7 +117,7 @@ public class LLMService {
                                         final int onTokenCallback,
                                         final int onCompleteCallback,
                                         final int onErrorCallback) {
-        LLMEngine.getInstance().sendMessageAsync(prompt, new LLMEngine.MessageCallback() {
+        LLMEngine.getInstance().sendMessageAsync(prompt, new LLMEngine.LLMCallback() {
             private StringBuilder mFullResponse = new StringBuilder();
 
             @Override
@@ -164,7 +173,7 @@ public class LLMService {
      * @param callbackId 回调函数 ID
      */
     public static void chat(String prompt, final int callbackId) {
-        LLMEngine.getInstance().sendMessageAsync(prompt, new LLMEngine.MessageCallback() {
+        LLMEngine.getInstance().sendMessageAsync(prompt, new LLMEngine.LLMCallback() {
             private StringBuilder mFullResponse = new StringBuilder();
 
             @Override
@@ -329,5 +338,188 @@ public class LLMService {
         } catch (Exception e) {
             Log.e(TAG, "Failed to notify Lua init result", e);
         }
+    }
+
+    // ==================== 模型下载相关 ====================
+
+    /**
+     * 获取模型存储目录的绝对路径
+     *
+     * @return 模型目录路径
+     */
+    public static String getModelDir() {
+        Context context = Cocos2dxActivity.getContext();
+        if (context == null) {
+            return "/sdcard/Android/data/org.cocos2dx.hellolua/files/models";
+        }
+        File dir = new File(context.getExternalFilesDir(null), "models");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return dir.getAbsolutePath();
+    }
+
+    /**
+     * 流式下载模型文件（异步，不阻塞主线程）
+     * 通过 Lua 全局回调报告进度和结果：
+     * - __LLM_ON_DOWNLOAD_PROGRESS__ : 进度百分比（如 "42"）
+     * - __LLM_ON_DOWNLOAD_COMPLETE__ : 文件路径（成功）或 "ERROR:msg"（失败）
+     * - __LLM_ON_DOWNLOAD_ERROR__ : 错误信息
+     *
+     * @param urlString 下载 URL
+     * @param destPath  目标文件绝对路径
+     * @return true 表示开始下载，false 表示参数无效
+     */
+    public static boolean downloadModel(final String urlString, final String destPath) {
+        if (urlString == null || urlString.isEmpty() || destPath == null || destPath.isEmpty()) {
+            Log.e(TAG, "downloadModel: invalid parameters");
+            return false;
+        }
+
+        Log.i(TAG, "Starting download: " + urlString);
+        Log.i(TAG, "Destination: " + destPath);
+
+        sDownloadCancelled = false;
+
+        LLMEngine.getInstance().submitTask(() -> {
+            File tempFile = new File(destPath + ".tmp");
+            HttpURLConnection connection = null;
+
+            try {
+                // 如果已有临时文件，删除重新下载
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
+
+                // 确保父目录存在
+                File parentDir = tempFile.getParentFile();
+                if (parentDir != null && !parentDir.exists()) {
+                    parentDir.mkdirs();
+                }
+
+                URL url = new URL(urlString);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setConnectTimeout(30000);
+                connection.setReadTimeout(60000);
+                connection.setRequestMethod("GET");
+                connection.connect();
+
+                int responseCode = connection.getResponseCode();
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    notifyDownloadError("HTTP error: " + responseCode);
+                    return;
+                }
+
+                long fileSize = connection.getContentLength();
+                Log.i(TAG, "File size: " + (fileSize > 0 ? (fileSize / 1024 / 1024) + " MB" : "unknown"));
+
+                InputStream is = connection.getInputStream();
+                FileOutputStream fos = new FileOutputStream(tempFile);
+
+                byte[] buffer = new byte[8192];
+                long totalRead = 0;
+                int bytesRead;
+                int lastReportedPercent = -1;
+
+                while ((bytesRead = is.read(buffer)) != -1) {
+                    if (sDownloadCancelled) {
+                        is.close();
+                        fos.close();
+                        tempFile.delete();
+                        notifyDownloadError("Download cancelled");
+                        return;
+                    }
+
+                    fos.write(buffer, 0, bytesRead);
+                    totalRead += bytesRead;
+
+                    // 计算并报告真实进度
+                    if (fileSize > 0) {
+                        int percent = (int) ((totalRead * 100) / fileSize);
+                        if (percent != lastReportedPercent) {
+                            lastReportedPercent = percent;
+                            final int finalPercent = percent;
+                            sHandler.post(() -> {
+                                try {
+                                    Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
+                                        "__LLM_ON_DOWNLOAD_PROGRESS__",
+                                        String.valueOf(finalPercent)
+                                    );
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Failed to report progress", e);
+                                }
+                            });
+                        }
+                    }
+                }
+
+                fos.flush();
+                fos.close();
+                is.close();
+
+                // 重命名为最终文件
+                File destFile = new File(destPath);
+                if (destFile.exists()) {
+                    destFile.delete();
+                }
+                boolean renamed = tempFile.renameTo(destFile);
+                if (!renamed) {
+                    notifyDownloadError("Failed to rename temp file");
+                    return;
+                }
+
+                Log.i(TAG, "Download completed: " + destPath + ", size: " + destFile.length());
+
+                // 通知下载完成
+                sHandler.post(() -> {
+                    try {
+                        Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
+                            "__LLM_ON_DOWNLOAD_COMPLETE__",
+                            destPath
+                        );
+                    } catch (Exception e) {
+                        Log.e(TAG, "Failed to notify download complete", e);
+                    }
+                });
+
+            } catch (final Exception e) {
+                Log.e(TAG, "Download failed", e);
+                // 清理临时文件
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
+                notifyDownloadError(e.getMessage());
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            }
+        });
+
+        return true;
+    }
+
+    /**
+     * 取消正在进行的下载
+     */
+    public static void cancelDownload() {
+        sDownloadCancelled = true;
+        Log.i(TAG, "Download cancel requested");
+    }
+
+    /**
+     * 通知 Lua 下载错误
+     */
+    private static void notifyDownloadError(final String errorMessage) {
+        sHandler.post(() -> {
+            try {
+                Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
+                    "__LLM_ON_DOWNLOAD_ERROR__",
+                    errorMessage != null ? errorMessage : "Unknown error"
+                );
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to notify download error", e);
+            }
+        });
     }
 }
