@@ -16,6 +16,8 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
+import org.cocos2dx.lua.AppActivity;
+
 public class LLMService {
     private static final String TAG = "LLMService";
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
@@ -224,6 +226,115 @@ public class LLMService {
             return file.length();
         }
         return -1;
+    }
+
+    // ==================== 多模态推理 ====================
+
+    public static void chatWithImage(String text, String imagePath, String audioPath,
+                                      final int onTokenCallback,
+                                      final int onCompleteCallback,
+                                      final int onErrorCallback) {
+        LLMEngine.getInstance().sendMultimodalMessageAsync(text, imagePath, audioPath,
+            new LLMEngine.LLMCallback() {
+                @Override
+                public void onToken(String token) {
+                    if (onTokenCallback != 0) {
+                        final String data = onTokenCallback + ":" + token;
+                        runOnGLThread(() -> {
+                            try {
+                                Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
+                                    "__LLM_ON_TOKEN__", data);
+                            } catch (Exception e) {
+                                Log.e(TAG, "Failed to call Lua onToken callback", e);
+                            }
+                        });
+                    }
+                }
+
+                @Override
+                public void onComplete(String fullResponse) {
+                    if (onCompleteCallback != 0) {
+                        final String data = onCompleteCallback + ":" + fullResponse;
+                        runOnGLThread(() -> {
+                            try {
+                                Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
+                                    "__LLM_ON_COMPLETE__", data);
+                            } catch (Exception e) {
+                                Log.e(TAG, "Failed to call Lua onComplete callback", e);
+                            }
+                        });
+                    }
+                }
+
+                @Override
+                public void onError(String errorMessage) {
+                    if (onErrorCallback != 0) {
+                        final String data = onErrorCallback + ":" + errorMessage;
+                        runOnGLThread(() -> {
+                            try {
+                                Cocos2dxLuaJavaBridge.callLuaGlobalFunctionWithString(
+                                    "__LLM_ON_ERROR__", data);
+                            } catch (Exception e) {
+                                Log.e(TAG, "Failed to call Lua onError callback", e);
+                            }
+                        });
+                    }
+                }
+            });
+    }
+
+    // ==================== 语音录音代理 ====================
+
+    public static boolean startSpeechRecognition() {
+        return SpeechService.startListening();
+    }
+
+    public static boolean stopSpeechRecognition() {
+        return SpeechService.stopListening();
+    }
+
+    // ==================== 图片操作代理 ====================
+
+    public static boolean takePhoto() {
+        return MediaService.takePhoto();
+    }
+
+    public static boolean pickImage() {
+        return MediaService.pickImage();
+    }
+
+    // ==================== 权限管理 ====================
+
+    public static boolean hasPermission(String permType) {
+        android.content.Context ctx = Cocos2dxActivity.getContext();
+        if (ctx == null) return false;
+        switch (permType) {
+            case "RECORD_AUDIO":
+                return ctx.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            case "CAMERA":
+                return ctx.checkSelfPermission(android.Manifest.permission.CAMERA)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            case "READ_EXTERNAL_STORAGE":
+                return ctx.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            default:
+                return false;
+        }
+    }
+
+    public static void requestPermission(String permType, int callbackId) {
+        switch (permType) {
+            case "RECORD_AUDIO":
+                AppActivity.requestAudioPermission(callbackId);
+                break;
+            case "CAMERA":
+                AppActivity.requestCameraPermission(callbackId);
+                break;
+            case "READ_EXTERNAL_STORAGE":
+                AppActivity.requestStoragePermission(callbackId);
+                break;
+        }
     }
 
     // ==================== 会话管理 ====================

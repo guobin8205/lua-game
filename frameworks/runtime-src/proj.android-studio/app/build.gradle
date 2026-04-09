@@ -241,4 +241,7 @@ dependencies {
     // TensorFlow Lite GPU 加速支持
     implementation 'com.google.android.gms:play-services-tflite-java:16.4.0'
     implementation 'com.google.android.gms:play-services-tflite-gpu:16.4.0'
+
+    // AndroidX Core (FileProvider for camera)
+    implementation 'androidx.core:core:1.6.0'
 }

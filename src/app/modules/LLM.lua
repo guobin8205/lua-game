@@ -60,6 +60,11 @@ local _callbackMap = {}
 local _downloadProgressCallback = nil
 local _downloadCompleteCallback = nil
 
+-- 图片/语音回调
+local _imageCallback = nil
+local _speechResultCallback = nil
+local _speechStartCallback = nil
+
 -- Java 类名
 local CLASS_NAME = "org/cocos2dx/lua/llm/LLMService"
 
@@ -674,6 +679,187 @@ function LLM.release()
     _downloadCompleteCallback = nil
 
     print("[LLM] Resources released")
+end
+
+-- ==================== 多模态聊天 ====================
+
+--[[
+    发送多模态消息（图片 + 文本），流式输出
+
+    @param prompt string 文本提示
+    @param imagePath string 图片文件路径
+    @param onToken function 每个 token 回调
+    @param onComplete function 完成回调
+    @param onError function 错误回调
+
+    @return boolean
+]]
+function LLM.chatWithImage(prompt, imagePath, audioPath, onToken, onComplete, onError)
+    if not isAndroid() then
+        if onError then onError("Not Android platform") end
+        return false
+    end
+
+    if not LLM.isReady() then
+        if onError then onError("LLM not initialized") end
+        return false
+    end
+
+    local luaj = getLuaj()
+    local onTokenId = onToken and registerCallback(onToken) or 0
+    local onCompleteId = onComplete and registerCallback(onComplete) or 0
+    local onErrorId = onError and registerCallback(onError) or 0
+
+    -- audioPath 可能为 nil，Java 层接受 null
+    local ok, ret = luaj.callStaticMethod(
+        CLASS_NAME,
+        "chatWithImage",
+        {prompt, imagePath or "", audioPath or "", onTokenId, onCompleteId, onErrorId},
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;III)V"
+    )
+
+    if not ok then
+        if onTokenId > 0 then popCallback(onTokenId) end
+        if onCompleteId > 0 then popCallback(onCompleteId) end
+        if onErrorId > 0 then popCallback(onErrorId) end
+        if onError then onError(ret) end
+        return false
+    end
+
+    return true
+end
+
+-- ==================== 语音识别 ====================
+
+function LLM.startSpeech(onStart, onResult)
+    if not isAndroid() then
+        if onResult then onResult(nil, "Not Android platform") end
+        return false
+    end
+    _speechStartCallback = onStart
+    _speechResultCallback = onResult
+    local luaj = getLuaj()
+    local ok, ret = luaj.callStaticMethod(CLASS_NAME, "startSpeechRecognition", {}, "()Z")
+    if not ok then
+        _speechStartCallback = nil
+        _speechResultCallback = nil
+        if onResult then onResult(nil, tostring(ret)) end
+        return false
+    end
+    return true
+end
+
+function LLM.stopSpeech()
+    if not isAndroid() then return false end
+    local luaj = getLuaj()
+    luaj.callStaticMethod(CLASS_NAME, "stopSpeechRecognition", {}, "()Z")
+    return true
+end
+
+-- ==================== 图片操作 ====================
+
+function LLM.takePhoto(callback)
+    if not isAndroid() then
+        if callback then callback(nil, "Not Android platform") end
+        return false
+    end
+    _imageCallback = callback
+    local luaj = getLuaj()
+    local ok, ret = luaj.callStaticMethod(CLASS_NAME, "takePhoto", {}, "()Z")
+    if not ok then
+        _imageCallback = nil
+        if callback then callback(nil, tostring(ret)) end
+        return false
+    end
+    return true
+end
+
+function LLM.pickImage(callback)
+    if not isAndroid() then
+        if callback then callback(nil, "Not Android platform") end
+        return false
+    end
+    _imageCallback = callback
+    local luaj = getLuaj()
+    local ok, ret = luaj.callStaticMethod(CLASS_NAME, "pickImage", {}, "()Z")
+    if not ok then
+        _imageCallback = nil
+        if callback then callback(nil, tostring(ret)) end
+        return false
+    end
+    return true
+end
+
+-- ==================== 权限管理 ====================
+
+function LLM.hasPermission(permType)
+    if not isAndroid() then return false end
+    local luaj = getLuaj()
+    local ok, ret = luaj.callStaticMethod(
+        CLASS_NAME, "hasPermission", {permType},
+        "(Ljava/lang/String;)Z")
+    return ok and ret
+end
+
+function LLM.requestPermission(permType, callback)
+    if not isAndroid() then
+        if callback then callback(false) end
+        return
+    end
+    local luaj = getLuaj()
+    local cbId = registerCallback(callback)
+    luaj.callStaticMethod(
+        CLASS_NAME, "requestPermission", {permType, cbId},
+        "(Ljava/lang/String;I)V")
+end
+
+-- ==================== 新增全局回调 ====================
+
+-- 图片选择/拍照回调
+cc.exports.__MEDIA_ON_IMAGE__ = function(data)
+    if _imageCallback then
+        local cb = _imageCallback
+        _imageCallback = nil
+        if string.find(data, "^ERROR:") then
+            cb(nil, string.sub(data, 7))
+        else
+            cb(data, nil)
+        end
+    end
+end
+
+-- 语音识别开始
+cc.exports.__SPEECH_ON_START__ = function(data)
+    if _speechStartCallback then
+        _speechStartCallback()
+    end
+end
+
+-- 语音识别结果
+cc.exports.__SPEECH_ON_RESULT__ = function(data)
+    if _speechResultCallback then
+        local cb = _speechResultCallback
+        _speechResultCallback = nil
+        _speechStartCallback = nil
+        if string.find(data, "^ERROR:") then
+            cb(nil, string.sub(data, 7))
+        else
+            cb(data, nil)
+        end
+    end
+end
+
+-- 权限请求结果
+cc.exports.__ON_PERM_RESULT__ = function(data)
+    local colonPos = string.find(data, ":")
+    if colonPos then
+        local id = tonumber(string.sub(data, 1, colonPos - 1))
+        local result = string.sub(data, colonPos + 1)
+        local callback = popCallback(id)
+        if callback then
+            callback(result == "GRANTED")
+        end
+    end
 end
 
 return LLM

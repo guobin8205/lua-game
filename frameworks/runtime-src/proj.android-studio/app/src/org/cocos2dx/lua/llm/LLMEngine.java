@@ -6,6 +6,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.google.ai.edge.litertlm.Backend;
+import com.google.ai.edge.litertlm.Content;
 import com.google.ai.edge.litertlm.Contents;
 import com.google.ai.edge.litertlm.Engine;
 import com.google.ai.edge.litertlm.EngineConfig;
@@ -149,7 +150,30 @@ public class LLMEngine {
         }
 
         // 创建 EngineConfig(path, textBackend, visionBackend, audioBackend, maxNumTokens, cacheDir)
-        EngineConfig config = new EngineConfig(absoluteModelPath, backend, null, null, null, null);
+        // 为多模态设置 visionBackend 和 audioBackend
+        Backend visionBackend = null;
+        try {
+            visionBackend = new Backend.GPU();
+            Log.i(TAG, "Using GPU vision backend");
+        } catch (Exception e) {
+            Log.w(TAG, "GPU vision backend failed, trying CPU", e);
+            try {
+                visionBackend = new Backend.CPU();
+                Log.i(TAG, "Using CPU vision backend");
+            } catch (Exception e2) {
+                Log.w(TAG, "CPU vision backend also failed, vision disabled", e2);
+            }
+        }
+
+        Backend audioBackend = null;
+        try {
+            audioBackend = new Backend.CPU();
+            Log.i(TAG, "Using CPU audio backend");
+        } catch (Exception e) {
+            Log.w(TAG, "Audio backend creation failed", e);
+        }
+
+        EngineConfig config = new EngineConfig(absoluteModelPath, backend, visionBackend, audioBackend, null, null);
 
         // 创建并初始化 Engine
         mEngine = new Engine(config);
@@ -262,6 +286,98 @@ public class LLMEngine {
         final StringBuilder fullResponse = new StringBuilder();
 
         mConversation.sendMessageAsync(text, new MessageCallback() {
+            @Override
+            public void onMessage(Message msg) {
+                final String token = msg.toString();
+                fullResponse.append(token);
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onToken(token);
+                    }
+                });
+            }
+
+            @Override
+            public void onDone() {
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onComplete(fullResponse.toString());
+                    }
+                });
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onError(throwable.getMessage());
+                    }
+                });
+            }
+        }, java.util.Collections.emptyMap());
+    }
+
+    /**
+     * 发送多模态消息（图片/音频 + 文本），异步流式输出
+     */
+    public void sendMultimodalMessageAsync(String text, String imagePath, String audioPath,
+                                            final LLMCallback callback) {
+        if (!mInitialized || mConversation == null) {
+            if (callback != null) {
+                mMainHandler.post(() -> callback.onError("Engine not initialized"));
+            }
+            return;
+        }
+
+        mExecutor.execute(() -> {
+            try {
+                generateMultimodalResponse(text, imagePath, audioPath, callback);
+            } catch (final Exception e) {
+                Log.e(TAG, "Failed to generate multimodal response", e);
+                mMainHandler.post(() -> {
+                    if (callback != null) {
+                        callback.onError(e.getMessage());
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * 生成多模态响应 - 图片/音频 + 文本
+     */
+    private void generateMultimodalResponse(String text, String imagePath, String audioPath,
+                                             final LLMCallback callback) {
+        final StringBuilder fullResponse = new StringBuilder();
+
+        // 构建多模态 Contents
+        Contents contents;
+        String promptText = (text != null && !text.isEmpty()) ? text : "请分析以上内容。";
+
+        boolean hasImage = imagePath != null && !imagePath.isEmpty() && new File(imagePath).exists();
+        boolean hasAudio = audioPath != null && !audioPath.isEmpty() && new File(audioPath).exists();
+
+        if (hasImage && hasAudio) {
+            contents = Contents.Companion.of(
+                new Content.ImageFile(imagePath),
+                new Content.AudioFile(audioPath),
+                new Content.Text(promptText)
+            );
+        } else if (hasImage) {
+            contents = Contents.Companion.of(
+                new Content.ImageFile(imagePath),
+                new Content.Text(promptText)
+            );
+        } else if (hasAudio) {
+            contents = Contents.Companion.of(
+                new Content.AudioFile(audioPath),
+                new Content.Text(promptText)
+            );
+        } else {
+            contents = Contents.Companion.of(new Content.Text(promptText));
+        }
+
+        mConversation.sendMessageAsync(contents, new MessageCallback() {
             @Override
             public void onMessage(Message msg) {
                 final String token = msg.toString();
