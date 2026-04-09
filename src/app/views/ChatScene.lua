@@ -186,17 +186,11 @@ function ChatScene:createInputField()
     local winSize = display.size
     local fieldWidth = winSize.width - 140
 
-    -- 创建 1x1 白色像素纹理作为 EditBox 背景
-    local rt = cc.RenderTexture:create(2, 2)
-    rt:begin()
-    local dn = cc.DrawNode:create()
-    dn:drawSolidRect(cc.p(0,0), cc.p(2,2), cc.c4f(0.96, 0.96, 0.96, 1.0))
-    dn:visit()
-    rt:endToLua()
-    local spriteFrame = rt:getSprite():getSpriteFrame()
+    -- 用 LayerColor 替代 RenderTexture 做 EditBox 背景，避免后台恢复后变黑
+    local bgSprite = ccui.Scale9Sprite:create()
+    bgSprite:setContentSize(cc.size(fieldWidth, SIZES.inputHeight))
+    bgSprite:setColor(cc.c3b(245, 245, 245))
 
-    -- 使用 Scale9Sprite 创建 EditBox
-    local bgSprite = ccui.Scale9Sprite:createWithSpriteFrame(spriteFrame)
     local editBox = ccui.EditBox:create(cc.size(fieldWidth, SIZES.inputHeight), bgSprite)
     editBox:setPlaceHolder("输入消息...")
     editBox:setFontSize(16)
@@ -304,6 +298,7 @@ function ChatScene:appendAIText(text)
     local bw = math.min(labelSize.width + SIZES.bubblePaddingX * 2, maxW)
     local bh = labelSize.height + SIZES.bubblePaddingY * 2
     node.bubbleNode:setContentSize(cc.size(bw, bh))
+    self:drawRoundedRect(node.bubbleNode, bw, bh)
     local isUser = node.msgData.type == MSG_TYPE.USER
     local posX = isUser and (winSize.width - bw - SIZES.scrollMargin) or SIZES.scrollMargin
     node.bubbleNode:setPosition(posX, 0)
@@ -408,12 +403,14 @@ function ChatScene:updateMessageNodeText(node, text)
             local bubbleHeight = labelSize.height + SIZES.bubblePaddingY * 2
             node.bubbleNode:setContentSize(cc.size(bubbleWidth, bubbleHeight))
 
+            -- 重绘圆角矩形
+            self:drawRoundedRect(node.bubbleNode, bubbleWidth, bubbleHeight)
+
             local winSize = display.size
             local isUser = node.msgData.type == MSG_TYPE.USER
             local posX = isUser and (winSize.width - bubbleWidth - SIZES.scrollMargin) or SIZES.scrollMargin
             node.bubbleNode:setPosition(posX, 0)
 
-            -- 保持 label 在气泡内的位置
             node.labelNode:setPosition(SIZES.bubblePaddingX, SIZES.bubblePaddingY)
 
             node:setContentSize(winSize.width, bubbleHeight + SIZES.messageSpacing)
@@ -422,48 +419,46 @@ function ChatScene:updateMessageNodeText(node, text)
 end
 
 function ChatScene:createRoundedRect(width, height, color)
-    local radius = SIZES.bubbleRadius
-    local c = cc.c4f(color.r / 255, color.g / 255, color.b / 255, 1)
-
-    -- 用 RenderTexture 渲染一个圆角矩形纹理，用于 Scale9Sprite
-    local texSize = 64
-    local rt = cc.RenderTexture:create(texSize, texSize)
-    rt:begin()
+    local node = cc.Node:create()
+    node:setContentSize(cc.size(width, height))
+    node:setAnchorPoint(0, 0)
 
     local dn = cc.DrawNode:create()
-    local r = 8
-    local s = texSize
-    local fill = cc.c4f(1, 1, 1, 1)  -- 白色，后面用 setColor 着色
+    node:addChild(dn)
+    node.drawNode = dn
+    node.bubbleColor = color
 
-    -- 画 4 个角的扇形
+    self:drawRoundedRect(node, width, height)
+    return node
+end
+
+function ChatScene:drawRoundedRect(bubbleNode, width, height)
+    local dn = bubbleNode.drawNode
+    local color = bubbleNode.bubbleColor
+    local r = SIZES.bubbleRadius
+    local c = cc.c4f(color.r / 255, color.g / 255, color.b / 255, 1)
     local segments = 8
+
+    dn:clear()
+
+    -- 四个角的扇形
     local function drawArc(cx, cy, startAngle)
         local pts = {cc.p(cx, cy)}
         for i = 0, segments do
             local angle = startAngle + math.pi / 2 * i / segments
             pts[#pts + 1] = cc.p(cx + r * math.cos(angle), cy + r * math.sin(angle))
         end
-        dn:drawPolygon(pts, #pts, fill, 0, cc.c4f(0, 0, 0, 0))
+        dn:drawPolygon(pts, #pts, c, 0, cc.c4f(0, 0, 0, 0))
     end
 
-    drawArc(r, r, math.pi)                  -- 左下
-    drawArc(s - r, r, math.pi * 1.5)        -- 右下
-    drawArc(s - r, s - r, 0)                -- 右上
-    drawArc(r, s - r, math.pi * 0.5)        -- 左上
+    drawArc(r, r, math.pi)                     -- 左下
+    drawArc(width - r, r, math.pi * 1.5)       -- 右下
+    drawArc(width - r, height - r, 0)           -- 右上
+    drawArc(r, height - r, math.pi * 0.5)       -- 左上
 
-    -- 画中间的矩形填充
-    dn:drawSolidRect(cc.p(r, 0), cc.p(s - r, s), fill)
-    dn:drawSolidRect(cc.p(0, r), cc.p(s, s - r), fill)
-    dn:visit()
-    rt:endToLua()
-
-    local spriteFrame = rt:getSprite():getSpriteFrame()
-    local sprite = ccui.Scale9Sprite:createWithSpriteFrame(spriteFrame)
-    sprite:setContentSize(cc.size(width, height))
-    sprite:setAnchorPoint(0, 0)
-    sprite:setColor(color)
-
-    return sprite
+    -- 中间矩形填充
+    dn:drawSolidRect(cc.p(r, 0), cc.p(width - r, height), c)
+    dn:drawSolidRect(cc.p(0, r), cc.p(width, height - r), c)
 end
 
 function ChatScene:updateScrollLayout(forceScrollToBottom)
