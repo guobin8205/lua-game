@@ -88,9 +88,6 @@ function ChatScene:initUI()
     -- 底部输入区域
     self.inputArea = self:createInputArea()
     self:addChild(self.inputArea)
-
-    -- 添加系统欢迎消息（initLLM 会更新此消息）
-    self:addSystemMessage("正在准备 AI 模型...")
 end
 
 function ChatScene:createTitleBar()
@@ -255,7 +252,7 @@ function ChatScene:addUserMessage(text)
     table.insert(self.messageNodes, node)
     self.scrollContainer:addChild(node)
 
-    self:updateScrollLayout()
+    self:updateScrollLayout(true)
 end
 
 function ChatScene:addAIMessage(text)
@@ -273,7 +270,7 @@ function ChatScene:addAIMessage(text)
     self.currentAIMsg = msg
     self.currentAINode = node
 
-    self:updateScrollLayout()
+    self:updateScrollLayout(true)
 end
 
 function ChatScene:addSystemMessage(text)
@@ -292,10 +289,56 @@ function ChatScene:addSystemMessage(text)
 end
 
 function ChatScene:appendAIText(text)
-    if self.currentAIMsg then
-        self.currentAIMsg.text = self.currentAIMsg.text .. text
-        self:updateMessageNodeText(self.currentAINode, self.currentAIMsg.text)
-        self:updateScrollLayout()
+    if not self.currentAIMsg then return end
+    self.currentAIMsg.text = self.currentAIMsg.text .. text
+
+    local node = self.currentAINode
+    local winSize = display.size
+    local maxW = SIZES.bubbleMaxWidth
+
+    -- 更新文字
+    node.labelNode:setString(self.currentAIMsg.text)
+    local labelSize = node.labelNode:getContentSize()
+
+    -- 更新气泡大小
+    local bw = math.min(labelSize.width + SIZES.bubblePaddingX * 2, maxW)
+    local bh = labelSize.height + SIZES.bubblePaddingY * 2
+    node.bubbleNode:setContentSize(cc.size(bw, bh))
+    local isUser = node.msgData.type == MSG_TYPE.USER
+    local posX = isUser and (winSize.width - bw - SIZES.scrollMargin) or SIZES.scrollMargin
+    node.bubbleNode:setPosition(posX, 0)
+    node.labelNode:setPosition(SIZES.bubblePaddingX, SIZES.bubblePaddingY)
+
+    local oldNodeH = node:getContentSize().height
+    local newNodeH = bh + SIZES.messageSpacing
+    node:setContentSize(winSize.width, newNodeH)
+
+    -- 增量调整：只改容器高度和当前节点之后的偏移
+    local deltaH = newNodeH - oldNodeH
+    if deltaH ~= 0 then
+        local oldContainerH = self.scrollContainer:getContentSize().height
+        local newContainerH = math.max(oldContainerH + deltaH, self.scrollHeight)
+        self.scrollContainer:setContentSize(winSize.width, newContainerH)
+
+        -- 容器变高了，把 AI 节点之前的节点整体上移 deltaH
+        -- AI 节点本身不动（它在底部）
+        local idx = nil
+        for i, n in ipairs(self.messageNodes) do
+            if n == node then idx = i; break end
+        end
+        if idx then
+            for i = 1, idx - 1 do
+                local n = self.messageNodes[i]
+                n:setPosition(0, n:getPositionY() + deltaH)
+            end
+        end
+
+        -- 滚动到底部
+        local curOffset = self.scrollArea:getContentOffset()
+        local targetY = self.scrollHeight - newContainerH
+        if curOffset.y - targetY < 100 then
+            self.scrollArea:setContentOffset(cc.p(0, targetY), false)
+        end
     end
 end
 
@@ -339,13 +382,14 @@ function ChatScene:createMessageNode(msg)
         node.bubbleNode = bubble
 
         -- 设置标签位置
-        label:setPosition(bubbleWidth / 2, bubbleHeight / 2)
+        label:setAnchorPoint(0, 0)
+        label:setPosition(SIZES.bubblePaddingX, SIZES.bubblePaddingY)
         bubble:addChild(label)
         node.labelNode = label
 
         -- 设置位置（用户右侧，AI左侧）
         local posX = isUser and (winSize.width - bubbleWidth - SIZES.scrollMargin) or SIZES.scrollMargin
-        bubble:setPosition(posX + bubbleWidth / 2, bubbleHeight / 2)
+        bubble:setPosition(posX, 0)
 
         node:setContentSize(winSize.width, bubbleHeight + SIZES.messageSpacing)
     end
@@ -362,12 +406,15 @@ function ChatScene:updateMessageNodeText(node, text)
             local labelSize = node.labelNode:getContentSize()
             local bubbleWidth = math.min(labelSize.width + SIZES.bubblePaddingX * 2, SIZES.bubbleMaxWidth)
             local bubbleHeight = labelSize.height + SIZES.bubblePaddingY * 2
-            node.bubbleNode:setContentSize(bubbleWidth, bubbleHeight)
+            node.bubbleNode:setContentSize(cc.size(bubbleWidth, bubbleHeight))
 
             local winSize = display.size
             local isUser = node.msgData.type == MSG_TYPE.USER
             local posX = isUser and (winSize.width - bubbleWidth - SIZES.scrollMargin) or SIZES.scrollMargin
-            node.bubbleNode:setPosition(posX + bubbleWidth / 2, bubbleHeight / 2)
+            node.bubbleNode:setPosition(posX, 0)
+
+            -- 保持 label 在气泡内的位置
+            node.labelNode:setPosition(SIZES.bubblePaddingX, SIZES.bubblePaddingY)
 
             node:setContentSize(winSize.width, bubbleHeight + SIZES.messageSpacing)
         end
@@ -375,27 +422,51 @@ function ChatScene:updateMessageNodeText(node, text)
 end
 
 function ChatScene:createRoundedRect(width, height, color)
-    -- 简单的圆角矩形实现
-    local node = cc.Node:create()
-    node:setContentSize(width, height)
+    local radius = SIZES.bubbleRadius
+    local c = cc.c4f(color.r / 255, color.g / 255, color.b / 255, 1)
 
-    -- 使用 DrawNode 绘制圆角矩形
-    local drawNode = cc.DrawNode:create()
+    -- 用 RenderTexture 渲染一个圆角矩形纹理，用于 Scale9Sprite
+    local texSize = 64
+    local rt = cc.RenderTexture:create(texSize, texSize)
+    rt:begin()
 
-    -- 简化：绘制一个矩形
-    local points = {
-        cc.p(0, 0),
-        cc.p(width, 0),
-        cc.p(width, height),
-        cc.p(0, height)
-    }
-    drawNode:drawPolygon(points, 4, cc.c4f(color.r/255, color.g/255, color.b/255, 1), 0, cc.c4f(0, 0, 0, 0))
+    local dn = cc.DrawNode:create()
+    local r = 8
+    local s = texSize
+    local fill = cc.c4f(1, 1, 1, 1)  -- 白色，后面用 setColor 着色
 
-    node:addChild(drawNode)
-    return node
+    -- 画 4 个角的扇形
+    local segments = 8
+    local function drawArc(cx, cy, startAngle)
+        local pts = {cc.p(cx, cy)}
+        for i = 0, segments do
+            local angle = startAngle + math.pi / 2 * i / segments
+            pts[#pts + 1] = cc.p(cx + r * math.cos(angle), cy + r * math.sin(angle))
+        end
+        dn:drawPolygon(pts, #pts, fill, 0, cc.c4f(0, 0, 0, 0))
+    end
+
+    drawArc(r, r, math.pi)                  -- 左下
+    drawArc(s - r, r, math.pi * 1.5)        -- 右下
+    drawArc(s - r, s - r, 0)                -- 右上
+    drawArc(r, s - r, math.pi * 0.5)        -- 左上
+
+    -- 画中间的矩形填充
+    dn:drawSolidRect(cc.p(r, 0), cc.p(s - r, s), fill)
+    dn:drawSolidRect(cc.p(0, r), cc.p(s, s - r), fill)
+    dn:visit()
+    rt:endToLua()
+
+    local spriteFrame = rt:getSprite():getSpriteFrame()
+    local sprite = ccui.Scale9Sprite:createWithSpriteFrame(spriteFrame)
+    sprite:setContentSize(cc.size(width, height))
+    sprite:setAnchorPoint(0, 0)
+    sprite:setColor(color)
+
+    return sprite
 end
 
-function ChatScene:updateScrollLayout()
+function ChatScene:updateScrollLayout(forceScrollToBottom)
     local winSize = display.size
     local totalHeight = 0
 
@@ -408,7 +479,7 @@ function ChatScene:updateScrollLayout()
     local containerHeight = math.max(totalHeight, self.scrollHeight)
     self.scrollContainer:setContentSize(winSize.width, containerHeight)
 
-    -- 布局消息节点
+    -- 布局消息节点（从上往下，y 从 containerHeight 递减）
     local y = containerHeight
     for _, node in ipairs(self.messageNodes) do
         local h = node:getContentSize().height
@@ -416,10 +487,22 @@ function ChatScene:updateScrollLayout()
         node:setPosition(0, y)
     end
 
-    -- 滚动到底部
-    local scrollView = self.scrollArea
-    local offset = cc.p(0, self.scrollHeight - containerHeight)
-    scrollView:setContentOffset(offset, true)
+    -- 计算目标偏移量（底部位置）
+    local targetOffsetY = self.scrollHeight - containerHeight
+
+    -- 判断是否需要自动滚动到底部
+    local shouldScrollToBottom = forceScrollToBottom
+    if not shouldScrollToBottom then
+        local curOffset = self.scrollArea:getContentOffset()
+        -- curOffset.y 接近 targetOffsetY（差值 < 100）说明在底部附近
+        if curOffset.y - targetOffsetY < 100 then
+            shouldScrollToBottom = true
+        end
+    end
+
+    if shouldScrollToBottom then
+        self.scrollArea:setContentOffset(cc.p(0, targetOffsetY), false)
+    end
 end
 
 -- ==================== LLM 集成 ====================
@@ -515,6 +598,7 @@ function ChatScene:sendToAI(text)
             self.currentAIMsg = nil
             self.currentAINode = nil
             self:updateSendButtonState()
+            self:updateScrollLayout(true)
         end,
         -- onError: 错误
         function(error)
